@@ -127,7 +127,160 @@ CPool.lease(route, state, timeout, timeUnit)
 └─────────────────────────────────────────┘
 ```
 
-### 2.2 CPool.lease() 상세 코드
+### 2.2 ApacheHttpClient.execute() 상세
+
+실제 AWS SDK 코드에서 커넥션 획득이 어디서 일어나는지 살펴봅시다.
+
+#### 사용자가 보는 코드
+
+```java
+// AWS SDK v2: software.amazon.awssdk.http.apache.internal.ApacheHttpClient
+private HttpExecuteResponse execute(HttpRequestBase apacheRequest, MetricCollector metricCollector) throws IOException {
+    HttpClientContext localRequestContext = ApacheUtils.newClientContext(this.requestConfig.proxyConfiguration());
+    ClientConnectionRequestFactory.THREAD_LOCAL_REQUEST_METRIC_COLLECTOR.set(metricCollector);
+
+    HttpExecuteResponse var5;
+    try {
+        // ⭐ 바로 여기서 커넥션 획득이 일어납니다!
+        HttpResponse httpResponse = this.httpClient.execute(apacheRequest, localRequestContext);
+        var5 = this.createResponse(httpResponse, apacheRequest);
+    } finally {
+        ClientConnectionRequestFactory.THREAD_LOCAL_REQUEST_METRIC_COLLECTOR.remove();
+    }
+
+    return var5;
+}
+```
+
+**핵심:** `this.httpClient.execute()` 호출 시점에 내부적으로 커넥션 획득이 시작됩니다.
+
+#### Apache HttpClient 내부 동작
+
+```java
+// Apache HttpClient 내부 (간략화)
+public class InternalHttpClient {
+
+    public HttpResponse execute(HttpRequest request, HttpContext context) throws IOException {
+        // ──────────────────────────────────────
+        // 1단계: Route 결정 (어느 호스트로 연결할지)
+        // ──────────────────────────────────────
+        HttpRoute route = determineRoute(request);
+        logger.debug("Determined route: {}", route);
+
+        // ──────────────────────────────────────
+        // 2단계: ⭐ 커넥션 획득 요청
+        // ──────────────────────────────────────
+        ConnectionRequest connRequest = connManager.requestConnection(
+            route,
+            null,  // state
+            connectionRequestTimeout,
+            TimeUnit.MILLISECONDS
+        );
+        logger.debug("Connection request created for route: {}", route);
+
+        // ──────────────────────────────────────
+        // 3단계: 커넥션 획득 대기 (블로킹)
+        // 이 시점에서 CPool.lease()가 호출됨
+        // ──────────────────────────────────────
+        HttpClientConnection conn = connRequest.get(
+            connectionRequestTimeout,
+            TimeUnit.MILLISECONDS
+        );
+        logger.debug("Connection acquired: {}", conn);
+
+        try {
+            // ──────────────────────────────────────
+            // 4단계: 커넥션을 사용하여 요청 전송
+            // ──────────────────────────────────────
+            requestExecutor.execute(request, conn, context);
+            logger.debug("Request sent via connection: {}", conn);
+
+            // ──────────────────────────────────────
+            // 5단계: 응답 받기
+            // ──────────────────────────────────────
+            HttpResponse response = responseFactory.newHttpResponse(...);
+            logger.debug("Response received: {} {}",
+                response.getStatusLine().getStatusCode(),
+                response.getStatusLine().getReasonPhrase());
+
+            return response;
+
+        } catch (Exception e) {
+            // ──────────────────────────────────────
+            // 에러 시 커넥션 즉시 해제
+            // ──────────────────────────────────────
+            logger.error("Error during request execution, closing connection", e);
+            conn.close();
+            throw e;
+        }
+        // 정상 흐름: 커넥션은 InputStream.close() 시점에 반환됨
+    }
+}
+```
+
+#### 상세 흐름도
+
+```
+사용자 코드: s3.getObject(request)
+    ↓
+ApacheHttpClient.execute(apacheRequest, context)
+    ↓
+┌─────────────────────────────────────────────────┐
+│ InternalHttpClient.execute()                    │
+│                                                 │
+│ 1. determineRoute()                             │
+│    → route = s3.ap-northeast-2.amazonaws.com    │
+│                                                 │
+│ 2. connManager.requestConnection(route)         │
+│    → ConnectionRequest 객체 생성                 │
+│                                                 │
+│ 3. connRequest.get(timeout) ⏳ (블로킹)          │
+│    ↓                                            │
+│    PoolingHttpClientConnectionManager           │
+│        ↓                                        │
+│    CPool.lease() ← 2.3절 참조                    │
+│        ↓                                        │
+│    ┌─ available에서 찾기                         │
+│    ├─ 없으면 새로 생성                           │
+│    └─ 불가능하면 pending 대기                    │
+│        ↓                                        │
+│    커넥션 획득 완료! ✅                           │
+│                                                 │
+│ 4. requestExecutor.execute(request, conn)       │
+│    → TCP 소켓으로 HTTP 요청 전송                 │
+│                                                 │
+│ 5. response 수신                                │
+│    → HttpResponse 객체 반환                      │
+└─────────────────────────────────────────────────┘
+    ↓
+ApacheHttpClient.createResponse(httpResponse)
+    ↓
+사용자에게 ResponseInputStream 반환
+```
+
+#### 핵심 포인트
+
+1. **`httpClient.execute()` 한 줄 안에 숨겨진 과정:**
+   - 커넥션 획득 요청
+   - Pool에서 대기 (필요 시 블로킹)
+   - 커넥션 획득
+   - HTTP 요청 전송
+   - 응답 수신
+
+2. **블로킹 지점:**
+   ```java
+   HttpClientConnection conn = connRequest.get(timeout, TimeUnit.MILLISECONDS);
+   ```
+   - Pool에 available 커넥션이 없으면 여기서 대기
+   - `connectionAcquisitionTimeout` 동안 블로킹
+   - 시간 내에 커넥션 못 얻으면 `ConnectionPoolTimeoutException` 발생
+
+3. **커넥션 획득 시점:**
+   - ❌ `s3.getObject()` 호출 시 (X)
+   - ❌ `ApacheHttpClient.execute()` 시작 시 (X)
+   - ✅ `connRequest.get()` 호출 시 (O)
+
+### 2.3 CPool.lease() 상세 코드
 
 ```java
 // Apache HttpComponents: org.apache.http.pool.AbstractConnPool
@@ -199,7 +352,7 @@ public class AbstractConnPool<T, E extends PoolEntry<T>> {
 }
 ```
 
-### 2.3 실제 시나리오
+### 2.4 실제 시나리오
 
 #### 시나리오 1: Pool에 여유가 있을 때
 ```
