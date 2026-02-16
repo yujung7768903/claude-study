@@ -83,7 +83,72 @@ export default function () {
 
 ---
 
-## 2. k6 내장 메트릭 전체 목록 (Grafana 공식 문서 기준)
+## 2. k6 스크립트 라이프사이클
+
+k6 스크립트는 4개의 단계로 실행되며, 필수인 것은 `init`과 `default`뿐이다.
+
+### 실행 흐름
+
+```
+init (VU마다)
+    ↓
+setup()          ← 전체 테스트에서 1번만 실행
+    ↓
+default(data)    ← VU × iterations 반복 실행
+default(data)
+default(data)
+...
+    ↓
+teardown(data)   ← 전체 테스트에서 1번만 실행
+```
+
+### 단계별 설명
+
+| 단계 | 필수 여부 | 실행 횟수 | 용도 |
+|------|-----------|-----------|------|
+| **init** (최상위 스코프) | **필수** | VU마다 1번 | 모듈 import, 파일 읽기, 옵션 설정 |
+| **setup()** | 선택 | 전체 테스트에서 **1번** | 테스트 데이터 준비, 로그인 토큰 발급 등 |
+| **default()** | **필수** | VU × iterations 반복 | 실제 부하 테스트 로직 |
+| **teardown()** | 선택 | 전체 테스트에서 **1번** | 정리 작업, 로그아웃, 임시 데이터 삭제 등 |
+
+### 코드 예시
+
+```javascript
+// 1. init — 최상위 스코프 (필수)
+import http from 'k6/http';
+
+// 2. setup — 테스트 시작 전 1번 실행 (선택)
+export function setup() {
+  const token = http.post('https://api.example.com/login', {
+    username: 'admin', password: '1234'
+  }).json('token');
+  return { token };  // return 값이 default와 teardown에 전달됨
+}
+
+// 3. default — VU마다 반복 실행 (필수)
+export default function (data) {
+  http.get('https://api.example.com/users', {
+    headers: { Authorization: `Bearer ${data.token}` },
+  });
+}
+
+// 4. teardown — 테스트 종료 후 1번 실행 (선택)
+export function teardown(data) {
+  http.post('https://api.example.com/logout', null, {
+    headers: { Authorization: `Bearer ${data.token}` },
+  });
+}
+```
+
+> **핵심**: `setup()`의 return 값이 `default(data)`와 `teardown(data)`의 인자로 전달된다.
+
+### iteration_duration과의 관계
+
+내장 메트릭 `iteration_duration`은 **setup과 teardown에 소요된 시간을 포함**한 1회 전체 반복 소요 시간이다. 순수하게 `default()` 함수만의 소요 시간을 측정하려면 커스텀 Trend 메트릭을 사용해야 한다.
+
+---
+
+## 3. k6 내장 메트릭 전체 목록 (Grafana 공식 문서 기준)
 
 ### Standard 내장 메트릭 (프로토콜 무관, 항상 수집)
 
@@ -125,9 +190,9 @@ blocked → connecting → tls_handshaking → sending → waiting → receiving
 
 ---
 
-## 3. k6 → InfluxDB 연동 시 데이터 저장 구조
+## 4. k6 → InfluxDB 연동 시 데이터 저장 구조
 
-### 3.1 실행 방법
+### 4.1 실행 방법
 
 ```bash
 # InfluxDB 1.x (k6 내장 지원)
@@ -140,7 +205,7 @@ K6_INFLUXDB_TOKEN=my-token \
 ./k6 run --out xk6-influxdb=http://localhost:8086 script.js
 ```
 
-### 3.2 메트릭 → InfluxDB 매핑 규칙
+### 4.2 메트릭 → InfluxDB 매핑 규칙
 
 k6의 **각 메트릭 이름이 InfluxDB의 measurement(테이블)**가 된다.
 
@@ -151,7 +216,7 @@ k6의 **각 메트릭 이름이 InfluxDB의 measurement(테이블)**가 된다.
 | **tag** | 메타데이터 (`method`, `status`, `url`, `name`, `scenario` 등) |
 | **timestamp** | 샘플 기록 시각 |
 
-### 3.3 메트릭 타입별 InfluxDB 저장 방식과 조회 전략
+### 4.3 메트릭 타입별 InfluxDB 저장 방식과 조회 전략
 
 InfluxDB에는 모든 메트릭이 **동일한 구조**(measurement + tags + `value` 필드 + timestamp)로 저장된다. 차이는 **조회할 때 사용하는 집계 함수**에 있다.
 
@@ -199,7 +264,7 @@ SELECT MEAN("value") FROM "checks"
 | **Rate** | 성공/실패 (0 또는 1) | 0/1의 평균 = 비율 | `MEAN("value")` |
 | **Trend** | 측정값 (245.3, 189.1...) | 분포 통계 (avg, p95 등) | `PERCENTILE("value", 95)` |
 
-### 3.4 생성되는 measurement(테이블) 목록
+### 4.4 생성되는 measurement(테이블) 목록
 
 ```
 Counter 계열:  http_reqs, iterations, data_received, data_sent, dropped_iterations
@@ -210,7 +275,7 @@ Trend 계열:    http_req_duration, http_req_blocked, http_req_connecting,
                http_req_receiving, iteration_duration
 ```
 
-### 3.5 태그(Tag)와 필드(Field) 구성
+### 4.5 태그(Tag)와 필드(Field) 구성
 
 **기본 태그** (각 데이터 포인트에 자동 부여):
 
@@ -231,7 +296,7 @@ Trend 계열:    http_req_duration, http_req_blocked, http_req_connecting,
 
 기본값은 `vu:int,iter:int,url`로, 높은 카디널리티를 가진 `url` 등을 필드로 변환하여 인덱스 부담을 줄인다.
 
-### 3.6 주요 환경변수
+### 4.6 주요 환경변수
 
 | 변수 | 설명 | 기본값 |
 |------|------|--------|
@@ -245,9 +310,9 @@ Trend 계열:    http_req_duration, http_req_blocked, http_req_connecting,
 
 ---
 
-## 4. InfluxDB 기본 개념
+## 5. InfluxDB 기본 개념
 
-### 4.1 시계열 데이터베이스(TSDB)란?
+### 5.1 시계열 데이터베이스(TSDB)란?
 
 **시간 인덱스 기반**으로 데이터를 저장·조회하도록 최적화된 데이터베이스.
 
@@ -256,7 +321,7 @@ Trend 계열:    http_req_duration, http_req_blocked, http_req_connecting,
 - 자동 데이터 다운샘플링 및 보존 정책
 - 시간 순서 데이터에 최적화된 압축
 
-### 4.2 핵심 개념
+### 5.2 핵심 개념
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -288,7 +353,7 @@ Trend 계열:    http_req_duration, http_req_blocked, http_req_connecting,
 | **Retention Policy (v1)** | 데이터 보존 기간 설정 (예: 30일 후 자동 삭제) |
 | **Bucket (v2)** | Database + Retention Policy를 하나로 합친 개념 |
 
-### 4.3 Tag vs Field 비교
+### 5.3 Tag vs Field 비교
 
 | 특성 | Tag | Field |
 |------|-----|-------|
@@ -301,7 +366,7 @@ Trend 계열:    http_req_duration, http_req_blocked, http_req_connecting,
 
 > **핵심 원칙**: 필터링/그룹핑에 자주 쓰이고 고유 값이 적은 데이터 → **Tag**, 수학 연산이 필요하거나 고유 값이 많은 데이터 → **Field**
 
-### 4.4 InfluxDB Line Protocol
+### 5.4 InfluxDB Line Protocol
 
 InfluxDB에 데이터를 쓸 때 사용하는 텍스트 기반 형식:
 
@@ -315,7 +380,7 @@ http_reqs,method=POST,status=201 value=1 1705312200000000000
 vus value=50 1705312200000000000
 ```
 
-### 4.5 InfluxDB 1.x vs 2.x 비교
+### 5.5 InfluxDB 1.x vs 2.x 비교
 
 | 항목 | InfluxDB 1.x | InfluxDB 2.x |
 |------|-------------|-------------|
@@ -328,9 +393,9 @@ vus value=50 1705312200000000000
 
 ---
 
-## 5. InfluxDB 쿼리
+## 6. InfluxDB 쿼리
 
-### 5.1 InfluxQL (SQL 유사 — v1 기본, v2 호환)
+### 6.1 InfluxQL (SQL 유사 — v1 기본, v2 호환)
 
 **기본 조회:**
 
@@ -398,7 +463,7 @@ SELECT MEDIAN("value") FROM "http_req_duration"        -- 중앙값
 SELECT LAST("value") FROM "vus"                        -- 마지막 값 (Gauge에 유용)
 ```
 
-### 5.2 Flux (InfluxDB 2.x 기본 쿼리 언어)
+### 6.2 Flux (InfluxDB 2.x 기본 쿼리 언어)
 
 파이프 포워드(`|>`) 연산자로 체이닝하는 함수형 쿼리 언어.
 
@@ -470,7 +535,7 @@ from(bucket: "k6")
 |> spread()                 // 최댓값 - 최솟값
 ```
 
-### 5.3 k6 결과 분석 실전 쿼리
+### 6.3 k6 결과 분석 실전 쿼리
 
 ```sql
 -- 초당 요청 수 (RPS)
@@ -518,7 +583,7 @@ SELECT sum("value") / ($__interval_ms / 1000)
 
 ---
 
-## 6. 실무 권장사항
+## 7. 실무 권장사항
 
 ### k6 + InfluxDB 운영 팁
 
