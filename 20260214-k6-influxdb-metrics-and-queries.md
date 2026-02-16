@@ -162,6 +162,43 @@ InfluxDB에는 모든 메트릭이 **동일한 구조**(measurement + tags + `va
 | **Rate** | `value=0` 또는 `value=1` | `MEAN("value")` → 비율 (0.0~1.0) |
 | **Trend** | `value=245.3` (밀리초) | `MEAN("value")` → 평균, `PERCENTILE("value", 95)` → p95 |
 
+#### Rate 타입의 InfluxDB 저장 원리 — "비율"이 아니라 "0/1"이 저장된다
+
+Rate 타입은 InfluxDB에 **비율 값이 저장되는 것이 아니다**. 개별 이벤트마다 성공(1)/실패(0)의 raw 값이 그대로 저장된다.
+
+```
+실제 InfluxDB checks 테이블 데이터:
+time                check           scenario value
+----                -----           -------- -----
+1771232981182344000 home status 200 contacts 1      ← 성공
+1771232950168540000 home status 200 contacts 1      ← 성공
+1771232919156348000 home status 200 contacts 0      ← 실패
+1771232888142850000 home status 200 contacts 0      ← 실패
+1771232661176058000 home status 200 contacts 0      ← 실패
+```
+
+"Rate"는 **저장 형식이 아니라 k6의 해석/집계 방식**을 의미한다:
+
+- **k6 end-of-test 요약**에서는 0/1 값들의 평균을 자동 계산하여 `checks ... 40.00%`처럼 비율로 표시
+- **InfluxDB**에서 비율을 얻으려면 `MEAN("value")`을 사용해야 한다 (0/1의 평균 = 비율)
+
+```sql
+-- InfluxDB에서 Rate 타입의 "비율" 도출 방법
+SELECT MEAN("value") FROM "checks"
+  WHERE time > now() - 1h
+  GROUP BY time(1m)
+-- 위 5건 기준: MEAN = (1+1+0+0+0)/5 = 0.4 → 40% 성공률
+```
+
+정리하면, **메트릭 타입은 "InfluxDB에 어떤 형태로 저장되느냐"가 아니라 "k6가 이 값들을 어떤 통계로 해석하느냐"를 결정**한다:
+
+| k6 타입 | 개별 저장 값 | k6가 해석하는 방식 | InfluxDB에서 같은 결과를 얻는 집계 |
+|---------|-------------|-------------------|-----------------------------------|
+| **Counter** | 발생량 (1, 1, 1...) | 전체 합산 | `SUM("value")` |
+| **Gauge** | 시점 값 (50, 48, 52...) | 마지막 값 / 최솟값 / 최댓값 | `LAST("value")` |
+| **Rate** | 성공/실패 (0 또는 1) | 0/1의 평균 = 비율 | `MEAN("value")` |
+| **Trend** | 측정값 (245.3, 189.1...) | 분포 통계 (avg, p95 등) | `PERCENTILE("value", 95)` |
+
 ### 3.4 생성되는 measurement(테이블) 목록
 
 ```
