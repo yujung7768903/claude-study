@@ -83,21 +83,36 @@ export default function () {
 
 ---
 
-## 2. k6 내장 메트릭 전체 목록
+## 2. k6 내장 메트릭 전체 목록 (Grafana 공식 문서 기준)
 
-### HTTP 메트릭
+### Standard 내장 메트릭 (프로토콜 무관, 항상 수집)
 
 | 메트릭 이름 | 타입 | 설명 |
 |-------------|------|------|
-| `http_reqs` | **Counter** | 생성된 총 HTTP 요청 수 |
-| `http_req_failed` | **Rate** | 실패한 요청의 비율 |
-| `http_req_duration` | **Trend** | 요청 전체 소요 시간 (sending + waiting + receiving) |
-| `http_req_blocked` | **Trend** | 요청 전 대기 시간 (TCP 연결 슬롯 확보까지) |
-| `http_req_connecting` | **Trend** | TCP 연결 수립 시간 |
-| `http_req_tls_handshaking` | **Trend** | TLS 핸드셰이크 시간 |
-| `http_req_sending` | **Trend** | 요청 데이터 전송 시간 |
-| `http_req_waiting` | **Trend** | 응답 대기 시간 (TTFB) |
-| `http_req_receiving` | **Trend** | 응답 데이터 수신 시간 |
+| `checks` | **Rate** | 성공한 check의 비율 |
+| `data_received` | **Counter** | 수신된 데이터 양. [개별 URL 추적](https://grafana.com/docs/k6/latest/using-k6/metrics/#tracking-data-for-an-individual-url) 가능 |
+| `data_sent` | **Counter** | 전송한 데이터 양. 개별 URL 단위로 추적 가능 |
+| `dropped_iterations` | **Counter** | VU 부족(arrival-rate executor) 또는 시간 부족(iteration 기반 executor에서 maxDuration 초과)으로 시작되지 못한 반복 횟수 |
+| `iteration_duration` | **Trend** | setup과 teardown을 포함한 1회 전체 반복 소요 시간 |
+| `iterations` | **Counter** | VU가 JS 스크립트(default 함수)를 실행한 총 횟수 |
+| `vus` | **Gauge** | 현재 활성 가상 사용자 수 |
+| `vus_max` | **Gauge** | 최대 가상 사용자 수 (성능에 영향을 주지 않도록 VU 리소스가 미리 할당됨) |
+
+### HTTP 전용 내장 메트릭 (HTTP 요청 시에만 생성)
+
+> **참고**: 모든 `http_req_*` 메트릭의 타임스탬프는 **요청 종료 시점**(응답 본문 수신 완료 또는 타임아웃 시점)에 기록된다.
+
+| 메트릭 이름 | 타입 | 설명 |
+|-------------|------|------|
+| `http_req_blocked` | **Trend** | 요청 시작 전 차단된 시간 (사용 가능한 TCP 연결 슬롯 대기 시간). float |
+| `http_req_connecting` | **Trend** | 원격 호스트와 TCP 연결을 수립하는 데 소요된 시간. float |
+| `http_req_duration` | **Trend** | 요청 전체 소요 시간. `http_req_sending + http_req_waiting + http_req_receiving`과 동일 (초기 DNS 조회/연결 시간 제외, 원격 서버의 처리 및 응답 시간). float |
+| `http_req_failed` | **Rate** | `setResponseCallback`에 따른 실패 요청 비율 |
+| `http_req_receiving` | **Trend** | 원격 호스트로부터 응답 데이터를 수신하는 데 소요된 시간. float |
+| `http_req_sending` | **Trend** | 원격 호스트로 데이터를 전송하는 데 소요된 시간. float |
+| `http_req_tls_handshaking` | **Trend** | 원격 호스트와 TLS 세션 핸드셰이크에 소요된 시간 |
+| `http_req_waiting` | **Trend** | 원격 호스트로부터 응답을 대기하는 시간 (일명 "첫 번째 바이트까지의 시간", TTFB). float |
+| `http_reqs` | **Counter** | k6가 생성한 총 HTTP 요청 수 |
 
 **HTTP 타이밍 분해도:**
 
@@ -106,18 +121,7 @@ blocked → connecting → tls_handshaking → sending → waiting → receiving
                                          |________duration________|
 ```
 
-### 일반 메트릭
-
-| 메트릭 이름 | 타입 | 설명 |
-|-------------|------|------|
-| `vus` | **Gauge** | 현재 활성 가상 사용자 수 |
-| `vus_max` | **Gauge** | 설정된 최대 VU 수 |
-| `iterations` | **Counter** | VU가 default 함수를 실행한 총 횟수 |
-| `iteration_duration` | **Trend** | default 함수 1회 반복 소요 시간 |
-| `data_received` | **Counter** | 수신 데이터 총량 (바이트) |
-| `data_sent` | **Counter** | 송신 데이터 총량 (바이트) |
-| `checks` | **Rate** | check 성공 비율 |
-| `dropped_iterations` | **Counter** | VU 부족/시간 부족으로 시작하지 못한 반복 수 |
+> `duration`은 `sending + waiting + receiving`만 포함하며, `blocked`, `connecting`, `tls_handshaking`은 포함하지 않는다.
 
 ---
 
