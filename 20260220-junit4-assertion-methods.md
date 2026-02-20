@@ -11,6 +11,53 @@
 
 ---
 
+## 빠른 참조 - Assertion 메서드 요약
+
+### 기본 검증
+
+| 메서드 | 설명 | 예시 |
+|--------|------|------|
+| `assertEquals(expected, actual)` | 값 동등성 검증 (equals() 사용) | `assertEquals(5, result)` |
+| `assertEquals(expected, actual, delta)` | 실수 비교 (오차 허용) | `assertEquals(3.14, pi, 0.01)` |
+| `assertNotEquals(unexpected, actual)` | 값 불일치 검증 | `assertNotEquals(0, list.size())` |
+| `assertTrue(condition)` | true 검증 | `assertTrue(user.isActive())` |
+| `assertFalse(condition)` | false 검증 | `assertFalse(list.isEmpty())` |
+| `assertNull(object)` | null 검증 | `assertNull(error)` |
+| `assertNotNull(object)` | not null 검증 | `assertNotNull(user)` |
+
+### 참조 검증
+
+| 메서드 | 설명 | 예시 |
+|--------|------|------|
+| `assertSame(expected, actual)` | 같은 객체 인스턴스 검증 (== 사용) | `assertSame(singleton1, singleton2)` |
+| `assertNotSame(unexpected, actual)` | 다른 객체 인스턴스 검증 | `assertNotSame(user1, user2)` |
+
+### 배열 검증
+
+| 메서드 | 설명 | 예시 |
+|--------|------|------|
+| `assertArrayEquals(expected, actual)` | 배열 비교 (순서, 길이, 각 요소) | `assertArrayEquals(arr1, arr2)` |
+| `assertArrayEquals(expected, actual, delta)` | 실수 배열 비교 (오차 허용) | `assertArrayEquals(expected, actual, 0.01)` |
+
+### 기타
+
+| 메서드 | 설명 | 예시 |
+|--------|------|------|
+| `fail()` | 테스트 강제 실패 | `fail("여기 도달하면 안 됨")` |
+| `fail(message)` | 메시지와 함께 실패 | `fail("예외가 발생해야 함")` |
+
+### 테스트 어노테이션
+
+| 어노테이션 | 설명 | 예시 |
+|-----------|------|------|
+| `@Test(expected = Exception.class)` | 예외 발생 검증 | `@Test(expected = IllegalArgumentException.class)` |
+| `@Test(timeout = 1000)` | 타임아웃 검증 (밀리초) | `@Test(timeout = 1000)` |
+
+> 💡 **팁**: 모든 assertion 메서드는 첫 번째 파라미터로 실패 메시지를 받을 수 있습니다.
+> 예: `assertEquals("사용자 이름이 일치해야 함", expected, actual)`
+
+---
+
 ## 기본 Assertion 메서드
 
 JUnit 4의 모든 assertion 메서드는 `org.junit.Assert` 클래스에 정의되어 있습니다.
