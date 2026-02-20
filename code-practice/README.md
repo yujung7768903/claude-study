@@ -24,9 +24,7 @@
 | 번호 | 제목 | 난이도 | 주제 |
 |------|------|--------|------|
 | 01 | 멀티스레드 카운터 | 하 | AtomicInteger, CAS |
-| 02 | API 클라이언트 테스트 | 중 | Mockito, ArgumentCaptor |
-| 03 | JSON 역직렬화 | 중 | Jackson, Reflection |
-| 04 | URI 빌더 | 하 | UriComponentsBuilder, 인코딩 |
+| 02 | UserService 테스트 작성 | 중 | Mockito, @Mock, @InjectMocks, verify, ArgumentCaptor |
 
 ## 폴더 구조
 
