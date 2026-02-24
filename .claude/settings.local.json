@@ -6,7 +6,15 @@
       "Bash(git remote set-url:*)",
       "Bash(git add:*)",
       "Bash(git commit:*)",
-      "Bash(git push:*)"
+      "Bash(git push:*)",
+      "Bash(Get-ChildItem -Path . -Filter \"*.md\")",
+      "Bash(Where-Object { $_Name -notmatch '^\\\\d{8}-' })",
+      "Bash(Select-Object Name, CreationTime)",
+      "Bash(Format-Table -AutoSize)",
+      "Bash(ls:*)",
+      "Bash(git pull:*)",
+      "Bash(shuf:*)",
+      "Bash(echo:*)"
     ]
   }
 }

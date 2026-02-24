@@ -5,23 +5,23 @@
 public class UnsafeCounter implements Counter {
 
     // TODO: int 필드 선언
-
+    private int count = 0;
 
     @Override
     public void increment() {
         // TODO: count를 1 증가
-
+        count++;
     }
 
     @Override
     public int getCount() {
         // TODO: 현재 count 값 반환
-        return 0;
+        return count;
     }
 
     @Override
     public void reset() {
         // TODO: count를 0으로 초기화
-
+        this.count = 0;
     }
 }

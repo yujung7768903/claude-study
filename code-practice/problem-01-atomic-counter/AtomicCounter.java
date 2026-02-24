@@ -6,23 +6,23 @@ import java.util.concurrent.atomic.AtomicInteger;
 public class AtomicCounter implements Counter {
 
     // TODO: AtomicInteger 필드 선언 및 초기화
-
+    Atomicinteger count = new AtomicInteger(0);
 
     @Override
     public void increment() {
         // TODO: AtomicInteger의 메서드를 사용하여 1 증가
-
+        count.getAndIncrement();
     }
 
     @Override
     public int getCount() {
         // TODO: AtomicInteger의 현재 값 반환
-        return 0;
+        return count.get();
     }
 
     @Override
     public void reset() {
         // TODO: AtomicInteger를 0으로 초기화
-
+        count.set(0);
     }
 }
