@@ -9,48 +9,42 @@ import static org.junit.Assert.*;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 
-// TODO: @RunWith 어노테이션 추가
+@RunWith(MockitoJUnitRunner.class)
 public class UserServiceTest {
 
-    // TODO: UserRepository를 @Mock으로 선언
+    @Mock
+    private UserRepository userRepository;
 
+    @Mock
+    private EmailService emailService;
 
-    // TODO: EmailService를 @Mock으로 선언
+    @Mock
+    private EventPublisher eventPublisher;
 
-
-    // TODO: EventPublisher를 @Mock으로 선언
-
-
-    // TODO: UserService를 @InjectMocks로 선언하여 의존성 자동 주입
-
+    @InjectMocks
+    private UserService userService;
 
     @Test
     public void 사용자_생성_성공_테스트() {
         // given
-        // TODO: userRepository.save() 호출 시 반환할 mock User 객체 생성
-        User mockUser = new User(1L, "john", "john@example.com");
-
-        // TODO: when().thenReturn()을 사용하여 userRepository.save() stubbing
-        // 힌트: when(userRepository.save(any(User.class))).thenReturn(mockUser);
-
+        String name = "john";
+        String email = "john@example.com";
+        User mockUser = new User(1L, name, email);
+        when(userRepository.save(any(User.class)))
+                .thenReturn(mockUser);
 
         // when
-        // TODO: userService.createUser() 호출
-        User result = null; // 이 부분을 구현하세요
-
+        User result = userService.createUser(name, email);
 
         // then
         // TODO: 반환된 User가 null이 아닌지 검증
-
-
+        assertNotNull(result);
         // TODO: User의 name이 "john"인지 검증
-
-
+        assertEquals(name, result.getName());
         // TODO: User의 email이 "john@example.com"인지 검증
-
-
+        assertEquals(email, result.getEmail());
         // TODO: userRepository.save()가 1번 호출되었는지 검증
-        // 힌트: verify(userRepository).save(any(User.class));
+        // 힌트: verify()로 mock 객체의 특정 메서드 호출 여부를 검증하세요
 
 
         // TODO: emailService.sendWelcomeEmail()이 1번 호출되었는지 검증
@@ -71,13 +65,12 @@ public class UserServiceTest {
 
         // then
         // TODO: ArgumentCaptor<String> 2개 생성 (email, userName용)
-        // 힌트: ArgumentCaptor<String> emailCaptor = ArgumentCaptor.forClass(String.class);
+        // 힌트: ArgumentCaptor.forClass()로 캡처할 타입을 지정하세요
 
 
 
         // TODO: verify()와 capture()를 사용하여 sendWelcomeEmail에 전달된 파라미터 캡처
-        // 힌트: verify(emailService).sendWelcomeEmail(emailCaptor.capture(), nameCaptor.capture());
-        // ⚠️ 주의: 모든 파라미터를 Matcher로 감싸야 합니다!
+        // ⚠️ 주의: 파라미터 일부만 Matcher를 쓰면 에러 납니다. 모든 파라미터를 통일하세요
 
 
         // TODO: 캡처한 email 값 가져오기
@@ -110,7 +103,6 @@ public class UserServiceTest {
 
 
         // TODO: verify()와 capture()를 사용하여 publish에 전달된 이벤트 캡처
-        // 힌트: verify(eventPublisher).publish(eventCaptor.capture());
 
 
         // TODO: 캡처한 이벤트 가져오기
