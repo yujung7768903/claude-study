@@ -8,3 +8,4 @@ Thumbs.db
 discord-quiz-bot/.env
 discord-quiz-bot/bot.log
 discord-quiz-bot/bot.error.log
+discord-quiz-bot/quiz_history.json
