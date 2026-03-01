@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.claude-study.quiz-bot</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/User/claude-study/discord-quiz-bot/venv/bin/python</string>
+        <string>/Users/User/claude-study/discord-quiz-bot/bot.py</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/User/claude-study/discord-quiz-bot</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/User/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>StandardOutPath</key>
+    <string>/Users/User/claude-study/discord-quiz-bot/bot.log</string>
+
+    <key>StandardErrorPath</key>
+    <string>/Users/User/claude-study/discord-quiz-bot/bot.error.log</string>
+</dict>
+</plist>
