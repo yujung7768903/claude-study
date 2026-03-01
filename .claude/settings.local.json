@@ -29,7 +29,9 @@
       "Bash(Format-Table -AutoSize)",
       "Bash(ls:*)",
       "Bash(shuf:*)",
-      "Bash(echo:*)"
+      "Bash(echo:*)",
+      "Bash(pyenv version:*)",
+      "Bash(/opt/homebrew/bin/python3.11:*)"
     ]
   }
 }
