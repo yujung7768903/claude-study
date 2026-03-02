@@ -203,15 +203,87 @@ func (g *Game) onType2Answer(c *Client, answer string) {
 
 ---
 
+## 7. readPump와 writePump를 분리하는 이유
+
+`conn` 하나가 양방향 WebSocket 커넥션이지만, gorilla/websocket은 **Read와 Write를 동시에 호출하면 안 된다** (스펙 상 concurrent write 금지).
+
+그래서 고루틴을 분리해서 각자 한 방향만 전담하게 한다.
+
+```
+readPump 고루틴  → conn.ReadMessage()  전담  (브라우저 → 서버)
+writePump 고루틴 → conn.Write()        전담  (서버 → 브라우저)
+```
+
+이렇게 하면 mutex 없이 안전하게 동시에 양방향 통신이 가능하다.
+
+> **흔한 오해**: writePump가 conn에 쓴 데이터를 readPump가 읽는 게 아니다.
+> readPump는 오직 **브라우저가 보낸 메시지**만 읽는다.
+
+---
+
+## 8. 브라우저에서 ws.onmessage가 동작하는 방식
+
+`ws.onmessage`는 주기적으로 메시지를 읽으러 가는 폴링이 아니라 **이벤트 핸들러 등록**이다.
+
+```
+브라우저가 WebSocket 연결 시
+→ 소켓 파일 디스크립터를 OS에 등록
+→ 데이터 도착 시 OS가 브라우저에 인터럽트로 알림
+→ 브라우저 이벤트 루프가 ws.onmessage 콜백 실행
+```
+
+`onclick`, `setTimeout`과 완전히 동일한 이벤트 루프 기반 방식이다.
+
+
+|    | 폴링 (예: HTTP) | WebSocket onmessage |
+|----|---|---|
+| 방식 | 클라이언트가 주기적으로 서버에 요청 | 서버가 보낼 때만 콜백 실행 |
+| 리소스 | 요청마다 오버헤드 | 연결 유지만 하면 됨 |
+| 지연 | 폴링 주기만큼 지연 | 실시간 |
+
+---
+
+## 9. c.conn.Write() 이후 내부 동작 — TCP 버퍼 스택
+
+WebSocket은 추상적인 개념이 아니라, 실제 OS 커널 버퍼 위에서 동작한다.
+
+```
+c.conn.Write(data)            ← gorilla/websocket (WebSocket 프레임 헤더 붙임)
+        ↓
+  Go net.Conn.Write()         ← syscall로 커널에 넘김. 여기서 바로 리턴
+        ↓
+  커널 TCP 송신 버퍼 (sk_buff) ← 실제 OS 버퍼. 패킷 분할·재전송 커널이 담당
+        ↓
+  NIC (네트워크 카드)
+        ↓
+  인터넷
+        ↓
+  브라우저 NIC
+        ↓
+  커널 TCP 수신 버퍼            ← 브라우저 OS 버퍼
+        ↓
+  브라우저 WebSocket 구현체     ← 프레임 파싱 (C++, 브라우저 엔진 내부)
+        ↓
+  ws.onmessage(event)
+```
+
+**핵심**: `conn.Write()`는 커널 송신 버퍼에 데이터를 넘기는 순간 리턴한다. 브라우저 도착을 기다리지 않는다. 패킷 분할, ACK 확인, 재전송은 모두 커널이 처리한다.
+
+```
+WebSocket = TCP + WebSocket 프레임 포맷 규칙
+```
+
+---
+
 ## 비교 — HTTP vs WebSocket
 
-| | HTTP | WebSocket |
-|--|------|-----------|
-| 연결 방식 | 요청마다 새 연결 | 한 번 연결 후 유지 |
-| 방향 | 단방향 (요청→응답) | 양방향 |
+|                   | HTTP | WebSocket |
+|-------------------|------|-----------|
+| 연결 방식             | 요청마다 새 연결 | 한 번 연결 후 유지 |
+| 방향                | 단방향 (요청→응답) | 양방향 |
 | 서버 → 클라이언트 먼저 보내기 | 불가 | 가능 |
-| 용도 | 일반 API | 실시간 (채팅, 게임) |
-| Go 라이브러리 | `net/http` | `gorilla/websocket` |
+| 용도                | 일반 API | 실시간 (채팅, 게임) |
+| Go 라이브러리          | `net/http` | `gorilla/websocket` |
 
 ---
 
