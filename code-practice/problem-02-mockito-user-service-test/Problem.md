@@ -125,7 +125,7 @@ public class UserService {
 ## 힌트
 
 ### Mock 선언
-```java
+```
 @Mock
 private UserRepository userRepository;
 ```
