@@ -1,0 +1,16 @@
+services:
+  bot:
+    build: .
+    restart: unless-stopped
+    volumes:
+      - .:/app/bot           # 봇 소스코드 (discord-quiz-bot/)
+      - ../:/app/study       # 학습 자료 .md + git repo (claude-study/)
+      - ./data:/app/data     # SQLite bot.db
+      - ./logs:/app/logs     # 로그
+    env_file:
+      - .env
+    environment:
+      - STUDY_DIR=/app/study
+      - DATA_DIR=/app/data
+      - LOG_DIR=/app/logs
+      - GIT_BIN=git

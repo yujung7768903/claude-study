@@ -27,9 +27,6 @@
     <key>KeepAlive</key>
     <true/>
 
-    <key>StandardOutPath</key>
-    <string>/Users/User/claude-study/discord-quiz-bot/bot.log</string>
-
     <key>StandardErrorPath</key>
     <string>/Users/User/claude-study/discord-quiz-bot/bot.error.log</string>
 </dict>

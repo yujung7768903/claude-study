@@ -5,57 +5,71 @@ import asyncio
 import random
 import os
 import logging
-import sys
-import json
+from logging.handlers import TimedRotatingFileHandler
 from datetime import time, datetime, timezone, timedelta
 from pathlib import Path
 from dotenv import load_dotenv
 
+import db
+from claude_client import call_claude, SONNET, HAIKU
+
 load_dotenv()
+
+# ── 경로 설정 (환경변수로 Docker / 로컬 모두 동작) ─────────────────
+STUDY_DIR  = Path(os.getenv("STUDY_DIR",  str(Path.home() / "claude-study")))
+DATA_DIR   = Path(os.getenv("DATA_DIR",   str(Path(__file__).parent / "data")))
+LOG_DIR    = Path(os.getenv("LOG_DIR",    str(Path(__file__).parent / "logs")))
+GIT_BIN    = os.getenv("GIT_BIN", "git")          # 로컬: /opt/homebrew/bin/git, 서버: git
+
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+
+_log_handler = TimedRotatingFileHandler(
+    LOG_DIR / "bot.log",
+    when="midnight",
+    backupCount=1,
+    encoding="utf-8",
+)
+_log_handler.suffix = "%Y-%m-%d"
 
 logging.basicConfig(
     level=logging.INFO,
     format="[%(asctime)s] [%(levelname)-8s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[logging.StreamHandler(sys.stdout)],  # stdout으로 통일
+    handlers=[_log_handler, logging.StreamHandler()],
 )
 
 DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-CHANNEL_ID = int(os.getenv("CHANNEL_ID"))
-STUDY_DIR = Path.home() / "claude-study"
+CHANNEL_ID    = int(os.getenv("CHANNEL_ID"))
+GITHUB_TOKEN  = os.getenv("GITHUB_TOKEN", "")
+GITHUB_REPO   = os.getenv("GITHUB_REPO", "yujung7768903/claude-study")
+
+# DB 초기화 + JSON 마이그레이션 (최초 1회)
+db.init_db()
+db.migrate_from_json(Path(__file__).parent / "quiz_history.json")
 
 intents = discord.Intents.default()
 intents.message_content = True
 client = discord.Client(intents=intents)
 
-# 현재 출제된 문제 상태
 state = {
-    "current_question": None,
-    "source_content": None,   # 문제를 낸 학습 자료 (채점 참고용)
-    "source_file": None,
+    "current_question":  None,
+    "source_content":    None,
+    "source_file":       None,
     "waiting_for_answer": False,
 }
 
 KST = timezone(timedelta(hours=9))
 
-# 평일 (월~금): (시, 분)
 WEEKDAY_TIMES = {(9, 30), (15, 0), (19, 20), (21, 0)}
-# 주말 (토~일)
 WEEKEND_TIMES = {(11, 0), (13, 38), (15, 0), (19, 0), (21, 0)}
-
-# tasks.loop에는 모든 시간의 합집합을 KST로 등록
 ALL_TIMES = sorted(
     {time(hour=h, minute=m, tzinfo=KST) for h, m in WEEKDAY_TIMES | WEEKEND_TIMES}
 )
 
 
+# ── 학습 파일 선택 ──────────────────────────────────────────────────
+
 def get_random_study_file() -> tuple[str, str]:
-    """
-    파일 선택 우선순위:
-    1. 오답/부분정답 파일 (다음날부터 1주 내 재출제)
-    2. 1주 내 출제 이력 없는 파일
-    3. 모두 소진 시 전체에서 선택
-    """
     md_map = {f.name: f for f in STUDY_DIR.glob("*.md")}
     if not md_map:
         return "", ""
@@ -63,14 +77,11 @@ def get_random_study_file() -> tuple[str, str]:
     retry_files, fresh_files = get_file_candidates(set(md_map.keys()))
 
     if retry_files:
-        candidates = retry_files
-        tag = "재출제(오답/부분정답)"
+        candidates, tag = retry_files, "재출제(오답/부분정답)"
     elif fresh_files:
-        candidates = fresh_files
-        tag = "신규"
+        candidates, tag = fresh_files, "신규"
     else:
-        candidates = set(md_map.keys())
-        tag = "전체(소진)"
+        candidates, tag = set(md_map.keys()), "전체(소진)"
         logging.warning("출제 가능한 파일 없음, 전체에서 선택")
 
     chosen_name = random.choice(list(candidates))
@@ -79,39 +90,12 @@ def get_random_study_file() -> tuple[str, str]:
     return chosen_name, content[:4000]
 
 
-CLAUDE_BIN = "/Users/User/.local/bin/claude"
-GIT_BIN = "/opt/homebrew/bin/git"
-HISTORY_FILE = Path(__file__).parent / "quiz_history.json"
-
-DEDUP_DAYS = 7  # 중복 출제 방지 기간 (정답 기준)
-
-
-# ── 학습 현황 관리 ──────────────────────────────────────────
-
-def load_history() -> list:
-    if not HISTORY_FILE.exists():
-        return []
-    with HISTORY_FILE.open(encoding="utf-8") as f:
-        return json.load(f).get("records", [])
-
-
-def save_history(records: list):
-    with HISTORY_FILE.open("w", encoding="utf-8") as f:
-        json.dump({"records": records}, f, ensure_ascii=False, indent=2)
-
-
 def get_file_candidates(all_files: set) -> tuple[set, set]:
-    """
-    파일을 두 그룹으로 분류해 반환.
-    - retry_files : 오답/부분정답 파일 (다음날부터 1주 내 재출제 대상)
-    - fresh_files : DEDUP_DAYS 내 출제 이력 없는 파일
-    """
-    records = load_history()
-    now = datetime.now(KST)
-    today = now.date()
-    cutoff = now - timedelta(days=DEDUP_DAYS)
+    records = db.load_history()
+    now     = datetime.now(KST)
+    today   = now.date()
+    cutoff  = now - timedelta(days=7)
 
-    # 파일별 가장 최근 기록만 추출
     latest: dict[str, dict] = {}
     for r in records:
         dt = datetime.fromisoformat(r["datetime"])
@@ -121,46 +105,22 @@ def get_file_candidates(all_files: set) -> tuple[set, set]:
         if fname not in latest or dt > latest[fname]["dt"]:
             latest[fname] = {"dt": dt, "result": r["result"]}
 
-    retry_files: set = set()
+    retry_files: set   = set()
     excluded_files: set = set()
 
     for fname, info in latest.items():
         if info["dt"] < cutoff:
-            continue  # 오래된 기록 → 제외 대상 아님
+            continue
         if info["result"] in ("오답", "부분정답", "미답변"):
-            # 오늘 출제된 건 오늘 다시 안 냄 (다음날부터)
             if info["dt"].date() < today:
                 retry_files.add(fname)
             else:
-                excluded_files.add(fname)  # 오늘 건 오늘은 스킵
+                excluded_files.add(fname)
         else:
-            # 정답/미확인 → DEDUP_DAYS 동안 제외
             excluded_files.add(fname)
 
     fresh_files = all_files - excluded_files - retry_files
     return retry_files, fresh_files
-
-
-def add_quiz_record(source_file: str, question: str):
-    records = load_history()
-    records.append({
-        "datetime": datetime.now(KST).isoformat(),
-        "date": datetime.now(KST).strftime("%Y-%m-%d"),
-        "source_file": source_file,
-        "question": question,
-        "result": "미답변",
-    })
-    save_history(records)
-
-
-def update_last_result(source_file: str, result: str):
-    """해당 파일의 가장 최근 미답변 기록을 결과로 업데이트"""
-    records = load_history()
-    for r in reversed(records):
-        if r["source_file"] == source_file and r["result"] == "미답변":
-            r["result"] = result
-            break
-    save_history(records)
 
 
 def extract_result(grade_text: str) -> str:
@@ -174,12 +134,10 @@ def extract_result(grade_text: str) -> str:
 
 
 def build_status_message() -> str:
-    records = load_history()
+    records = db.load_history()
     now = datetime.now(KST)
 
-    week_start = (now - timedelta(days=now.weekday())).replace(
-        hour=0, minute=0, second=0, microsecond=0
-    )
+    week_start  = (now - timedelta(days=now.weekday())).replace(hour=0, minute=0, second=0, microsecond=0)
     month_start = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
     def parse_dt(r):
@@ -187,13 +145,13 @@ def build_status_message() -> str:
         return dt if dt.tzinfo else dt.replace(tzinfo=KST)
 
     def summarize(recs: list) -> str:
-        total     = len(recs)
-        correct   = sum(1 for r in recs if r["result"] == "정답")
-        wrong     = sum(1 for r in recs if r["result"] == "오답")
-        partial   = sum(1 for r in recs if r["result"] == "부분정답")
+        total      = len(recs)
+        correct    = sum(1 for r in recs if r["result"] == "정답")
+        wrong      = sum(1 for r in recs if r["result"] == "오답")
+        partial    = sum(1 for r in recs if r["result"] == "부분정답")
         unanswered = sum(1 for r in recs if r["result"] in ("미답변", "미확인"))
-        answered  = correct + wrong + partial
-        accuracy  = round(correct / answered * 100) if answered else 0
+        answered   = correct + wrong + partial
+        accuracy   = round(correct / answered * 100) if answered else 0
         bar_filled = round(accuracy / 10)
         bar = "█" * bar_filled + "░" * (10 - bar_filled)
         return (
@@ -205,7 +163,6 @@ def build_status_message() -> str:
     week_recs  = [r for r in records if parse_dt(r) >= week_start]
     month_recs = [r for r in records if parse_dt(r) >= month_start]
 
-    # 재출제 대기 중인 파일 (오답/부분정답, 오늘 이전)
     today = now.date()
     latest: dict[str, dict] = {}
     for r in records:
@@ -220,10 +177,8 @@ def build_status_message() -> str:
     ]
 
     lines = ["📊 **학습 현황**", ""]
-
     lines += ["**📅 이번 주**", summarize(week_recs), ""]
     lines += ["**🗓 이번 달**", summarize(month_recs), ""]
-
     if retry_pending:
         topics = "\n".join(f"  • `{f}`" for f in retry_pending[:10])
         lines += [f"**🔁 재출제 대기** ({len(retry_pending)}개)", topics]
@@ -233,37 +188,44 @@ def build_status_message() -> str:
     return "\n".join(lines)
 
 
-def run_claude(prompt: str) -> str:
-    result = subprocess.run(
-        [CLAUDE_BIN, "-p", prompt],
-        capture_output=True,
-        text=True,
-        cwd=str(STUDY_DIR),
-    )
-    if result.returncode != 0:
-        return f"(오류: {result.stderr.strip()})"
-    return result.stdout.strip()
+# ── Claude 호출 ─────────────────────────────────────────────────────
+
+async def send_long_message(channel, text: str, limit: int = 2000):
+    lines = text.split("\n")
+    chunk = ""
+    for line in lines:
+        if len(chunk) + len(line) + 1 > limit:
+            await channel.send(chunk)
+            chunk = line + "\n"
+        else:
+            chunk += line + "\n"
+    if chunk.strip():
+        await channel.send(chunk)
 
 
 def _save_qa_sync(question: str, answer: str):
-    # git pull
-    pull = subprocess.run(
-        [GIT_BIN, "pull"],
-        capture_output=True, text=True, cwd=str(STUDY_DIR),
-    )
-    logging.info(f"git pull: {pull.stdout.strip() or pull.stderr.strip()}")
+    subprocess.run([GIT_BIN, "pull"], capture_output=True, text=True, cwd=str(STUDY_DIR))
 
-    # 파일명용 slug 생성 (Claude에게 요청)
-    slug = run_claude(
-        f"다음 질문을 영어 kebab-case로 4단어 이내로 요약해줘. 결과(slug)만 출력:\n{question}"
+    # slug 생성: 단순 작업 → Haiku
+    slug = call_claude(
+        f"다음 질문을 영어 kebab-case로 4단어 이내로 요약해줘. 결과(slug)만 출력:\n{question}",
+        model=HAIKU,
+        max_tokens=32,
     ).strip().lower().replace(" ", "-")
+    # 경로 탈출 방지
+    slug = "".join(c for c in slug if c.isalnum() or c == "-")[:60]
 
-    today = datetime.now(KST).strftime("%Y%m%d")
+    today    = datetime.now(KST).strftime("%Y%m%d")
     filename = f"{today}-{slug}.md"
-    filepath = STUDY_DIR / filename
+    filepath = (STUDY_DIR / filename).resolve()
 
-    # md 내용 생성 (기존 파일 형식에 맞게 Claude에게 요청)
-    md_content = run_claude(
+    # 경로 탈출 검증
+    if not str(filepath).startswith(str(STUDY_DIR.resolve())):
+        logging.error(f"경로 탈출 시도 차단: {filename}")
+        return
+
+    # md 내용 생성: 품질 중요 → Sonnet
+    md_content = call_claude(
         f"""다음 Q&A를 기존 학습 노트 형식에 맞게 마크다운으로 정리해줘.
 형식 규칙:
 - 첫 줄은 # 제목 (질문 기반)
@@ -274,25 +236,96 @@ def _save_qa_sync(question: str, answer: str):
 
 질문: {question}
 
-답변: {answer}"""
+답변: {answer}""",
+        model=SONNET,
     )
 
     filepath.write_text(md_content, encoding="utf-8")
     logging.info(f"md 저장 완료: {filename}")
+
+    # 서버 환경에서만 push (GITHUB_TOKEN 있을 때)
+    if GITHUB_TOKEN:
+        repo_url = f"https://{GITHUB_TOKEN}@github.com/{GITHUB_REPO}.git"
+        subprocess.run([GIT_BIN, "config", "user.email", "bot@assistant"], cwd=str(STUDY_DIR))
+        subprocess.run([GIT_BIN, "config", "user.name", "Assistant Bot"], cwd=str(STUDY_DIR))
+        subprocess.run([GIT_BIN, "add", filename], cwd=str(STUDY_DIR))
+        subprocess.run([GIT_BIN, "commit", "-m", f"study: add {filename}"], cwd=str(STUDY_DIR))
+        subprocess.run([GIT_BIN, "push", repo_url, "main"],
+                       capture_output=True, cwd=str(STUDY_DIR))
+        logging.info("study note push 완료")
 
 
 async def save_qa_to_md(question: str, answer: str):
     await asyncio.to_thread(_save_qa_sync, question, answer)
 
 
+# ── 백업 (주 1회, 매주 일요일 새벽 3시) ────────────────────────────
+
+def _run_backup():
+    import shutil
+    if not GITHUB_TOKEN:
+        logging.warning("GITHUB_TOKEN 없음, 백업 건너뜀")
+        return
+
+    backup_dir = STUDY_DIR / "discord-quiz-bot" / "backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    db_src = DATA_DIR / "bot.db"
+
+    if not db_src.exists():
+        logging.warning("bot.db 없음, 백업 건너뜀")
+        return
+
+    shutil.copy(db_src, backup_dir / "bot.db")
+    logging.info("bot.db 복사 완료")
+
+    repo_url = f"https://{GITHUB_TOKEN}@github.com/{GITHUB_REPO}.git"
+    subprocess.run([GIT_BIN, "config", "user.email", "bot@assistant"], cwd=str(STUDY_DIR))
+    subprocess.run([GIT_BIN, "config", "user.name", "Assistant Bot"], cwd=str(STUDY_DIR))
+    subprocess.run([GIT_BIN, "add", "discord-quiz-bot/backup/bot.db"], cwd=str(STUDY_DIR))
+    result = subprocess.run(
+        [GIT_BIN, "commit", "-m", f"backup: weekly db {datetime.now(KST).strftime('%Y-%m-%d')}"],
+        capture_output=True, text=True, cwd=str(STUDY_DIR),
+    )
+    if "nothing to commit" in result.stdout:
+        logging.info("백업: 변경사항 없음")
+        return
+    subprocess.run([GIT_BIN, "push", repo_url, "main"],
+                   capture_output=True, cwd=str(STUDY_DIR))
+    logging.info("주간 DB 백업 push 완료")
+
+
+@tasks.loop(time=time(hour=3, minute=0, tzinfo=KST))
+async def weekly_backup():
+    if datetime.now(KST).weekday() != 6:  # 일요일
+        return
+    logging.info("주간 백업 시작")
+    await asyncio.to_thread(_run_backup)
+
+
+# ── 스케줄 퀴즈 ─────────────────────────────────────────────────────
+
+@tasks.loop(time=time(hour=22, minute=0, tzinfo=KST))
+async def send_weekly_status():
+    if datetime.now(KST).weekday() != 6:
+        return
+    channel = client.get_channel(CHANNEL_ID)
+    if channel:
+        await channel.send(build_status_message())
+        logging.info("주간 학습 현황 전송 완료")
+
+
 @client.event
 async def on_ready():
-    print(f"✅ {client.user} 로 접속 완료")
-    send_quiz.start()
+    logging.info(f"✅ {client.user} 로 접속 완료")
+    if not send_quiz.is_running():
+        send_quiz.start()
+    if not send_weekly_status.is_running():
+        send_weekly_status.start()
+    if not weekly_backup.is_running():
+        weekly_backup.start()
 
 
 async def do_quiz(channel):
-    """퀴즈 1문제를 출제해 channel로 전송. 스케줄 및 /quiz 공용."""
     filename, content = get_random_study_file()
     if not content:
         await channel.send("⚠️ 학습 자료를 찾을 수 없습니다.")
@@ -317,39 +350,40 @@ async def do_quiz(channel):
 ❓ **문제**: (문제 내용)
 💡 **힌트**: (선택사항, 불필요하면 생략)"""
 
-    logging.info("claude -p 로 문제 생성 중...")
-    question = await asyncio.to_thread(run_claude, prompt)
-    logging.info(f"문제 생성 완료: {question[:50]}...")
+    logging.info("퀴즈 생성 중 (Sonnet)...")
+    question = await asyncio.to_thread(call_claude, prompt, SONNET)
+    logging.info(f"퀴즈 생성 완료: {question[:50]}...")
 
-    state["current_question"] = question
-    state["source_content"] = content
-    state["source_file"] = filename
+    state["current_question"]  = question
+    state["source_content"]    = content
+    state["source_file"]       = filename
     state["waiting_for_answer"] = True
 
     await channel.send(f"{question}\n\n_답변을 입력하면 채점해드립니다._")
-    add_quiz_record(filename, question)
-    logging.info("문제 전송 완료")
+    db.add_quiz_record(filename, question)
+    logging.info("퀴즈 전송 완료")
 
 
 @tasks.loop(time=ALL_TIMES)
 async def send_quiz():
-    now = datetime.now(KST)
+    now        = datetime.now(KST)
     is_weekend = now.weekday() >= 5
-    schedule = WEEKEND_TIMES if is_weekend else WEEKDAY_TIMES
-    logging.info(f"send_quiz 호출됨: {now.strftime('%H:%M')} {'주말' if is_weekend else '평일'} 스케줄={schedule}")
+    schedule   = WEEKEND_TIMES if is_weekend else WEEKDAY_TIMES
+    logging.info(f"send_quiz 호출: {now.strftime('%H:%M')} {'주말' if is_weekend else '평일'}")
 
     if (now.hour, now.minute) not in schedule:
-        logging.info("현재 시각은 스케줄에 없음, 스킵")
+        logging.info("스케줄 없음, 스킵")
         return
 
     channel = client.get_channel(CHANNEL_ID)
     if not channel:
-        logging.error(f"채널을 찾을 수 없음: {CHANNEL_ID}")
+        logging.error(f"채널 없음: {CHANNEL_ID}")
         return
 
-    logging.info(f"채널 확인: {channel.name}")
     await do_quiz(channel)
 
+
+# ── 메시지 핸들러 ────────────────────────────────────────────────────
 
 @client.event
 async def on_message(message):
@@ -358,26 +392,34 @@ async def on_message(message):
     if message.channel.id != CHANNEL_ID:
         return
 
-    # /status: 학습 현황 요약
     if message.content.strip() == "/status":
         await message.channel.send(build_status_message())
         return
 
-    # /quiz: 즉시 문제 출제
     if message.content.strip() == "/quiz":
         await do_quiz(message.channel)
         return
 
-    # ? prefix: 자유 질문 모드
     if message.content.startswith("?"):
         question_text = message.content[1:].strip()
         if not question_text:
             return
         thinking_msg = await message.channel.send("답변 생성 중... ⏳")
-        answer = await asyncio.to_thread(run_claude, question_text)
+
+        # 답변: 품질 중요 → Sonnet
+        answer = await asyncio.to_thread(call_claude, question_text, SONNET)
+
+        # 요약: 단순 작업 → Haiku
+        summary_prompt = f"""다음 Q&A를 1000자 이내로 핵심만 요약해줘.
+마크다운 형식을 유지하고, 마지막 줄에 추가:
+_자세한 내용은 학습 자료에 저장됩니다._
+
+질문: {question_text}
+답변: {answer}"""
+        summary = await asyncio.to_thread(call_claude, summary_prompt, HAIKU)
+
         await thinking_msg.delete()
-        await message.channel.send(answer)
-        # 답변 후 백그라운드에서 md 파일 저장
+        await message.channel.send(summary)
         asyncio.create_task(save_qa_to_md(question_text, answer))
         return
 
@@ -385,8 +427,7 @@ async def on_message(message):
         return
 
     state["waiting_for_answer"] = False
-    user_answer = message.content
-
+    user_answer  = message.content
     thinking_msg = await message.channel.send("채점 중... ⏳")
 
     grade_prompt = f"""아래 퀴즈 문제와 사용자 답변을 채점해주세요.
@@ -406,12 +447,11 @@ async def on_message(message):
 **해설**: (맞고 틀린 이유를 간결하게)
 **모범 답안**: (정확한 답변)"""
 
-    result = await asyncio.to_thread(run_claude, grade_prompt)
+    result = await asyncio.to_thread(call_claude, grade_prompt, SONNET)
 
     await thinking_msg.delete()
-    await message.channel.send(result)
-
-    update_last_result(state["source_file"], extract_result(result))
+    await send_long_message(message.channel, result)
+    db.update_last_result(state["source_file"], extract_result(result))
 
 
 client.run(DISCORD_TOKEN)
