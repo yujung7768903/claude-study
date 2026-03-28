@@ -254,9 +254,11 @@ def _save_qa_sync(question: str, answer: str):
                        capture_output=True, cwd=str(STUDY_DIR))
         logging.info("study note push 완료")
 
+    return filename
 
-async def save_qa_to_md(question: str, answer: str):
-    await asyncio.to_thread(_save_qa_sync, question, answer)
+
+async def save_qa_to_md(question: str, answer: str) -> str:
+    return await asyncio.to_thread(_save_qa_sync, question, answer)
 
 
 # ── 백업 (주 1회, 매주 일요일 새벽 3시) ────────────────────────────
@@ -400,8 +402,8 @@ async def on_message(message):
         await do_quiz(message.channel)
         return
 
-    if message.content.startswith("?"):
-        question_text = message.content[1:].strip()
+    if message.content.startswith("??"):
+        question_text = message.content[2:].strip()
         if not question_text:
             return
         thinking_msg = await message.channel.send("답변 생성 중... ⏳")
@@ -420,7 +422,29 @@ _자세한 내용은 학습 자료에 저장됩니다._
 
         await thinking_msg.delete()
         await message.channel.send(summary)
-        asyncio.create_task(save_qa_to_md(question_text, answer))
+
+        filename = await save_qa_to_md(question_text, answer)
+        if filename:
+            await message.channel.send(f"📝 학습 자료 저장됨: `{filename}`")
+        return
+
+    if message.content.startswith("?"):
+        question_text = message.content[1:].strip()
+        if not question_text:
+            return
+        thinking_msg = await message.channel.send("답변 생성 중... ⏳")
+
+        answer = await asyncio.to_thread(call_claude, question_text, SONNET)
+
+        summary_prompt = f"""다음 Q&A를 1000자 이내로 핵심만 요약해줘.
+마크다운 형식을 유지해줘.
+
+질문: {question_text}
+답변: {answer}"""
+        summary = await asyncio.to_thread(call_claude, summary_prompt, HAIKU)
+
+        await thinking_msg.delete()
+        await message.channel.send(summary)
         return
 
     if not state["waiting_for_answer"]:
