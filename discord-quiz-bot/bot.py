@@ -52,10 +52,12 @@ intents.message_content = True
 client = discord.Client(intents=intents)
 
 state = {
-    "current_question":  None,
-    "source_content":    None,
-    "source_file":       None,
+    "current_question":   None,
+    "source_content":     None,
+    "source_file":        None,
     "waiting_for_answer": False,
+    "current_quiz_id":    None,
+    "reminder_task":      None,
 }
 
 KST = timezone(timedelta(hours=9))
@@ -261,6 +263,35 @@ async def save_qa_to_md(question: str, answer: str) -> str:
     return await asyncio.to_thread(_save_qa_sync, question, answer)
 
 
+# ── 리마인더 ─────────────────────────────────────────────────────────
+
+async def reminder_loop(channel, quiz_id: int):
+    await asyncio.sleep(600)  # 10분
+    if state["waiting_for_answer"] and state["current_quiz_id"] == quiz_id:
+        await channel.send(f"⏰ 아직 `#{quiz_id}` 문제를 풀지 않으셨네요! 도전해보세요.")
+    else:
+        return
+
+    await asyncio.sleep(600)  # 20분
+    if state["waiting_for_answer"] and state["current_quiz_id"] == quiz_id:
+        await channel.send(f"⏰ 20분이 지났습니다! `#{quiz_id}` 아직 도전 중이신가요?")
+    else:
+        return
+
+    await asyncio.sleep(600)  # 30분
+    if state["waiting_for_answer"] and state["current_quiz_id"] == quiz_id:
+        await channel.send(
+            f"⏰ 30분이 지났습니다! `#{quiz_id}` 아직 답변하지 않으셨네요.\n"
+            f"정답을 보시겠습니까? `/answer` 를 입력하면 정답을 확인할 수 있습니다."
+        )
+
+
+def _cancel_reminder():
+    if state["reminder_task"] and not state["reminder_task"].done():
+        state["reminder_task"].cancel()
+    state["reminder_task"] = None
+
+
 # ── 백업 (주 1회, 매주 일요일 새벽 3시) ────────────────────────────
 
 def _run_backup():
@@ -328,15 +359,29 @@ async def on_ready():
 
 
 async def do_quiz(channel):
-    filename, content = get_random_study_file()
-    if not content:
-        await channel.send("⚠️ 학습 자료를 찾을 수 없습니다.")
-        return
+    _cancel_reminder()
 
-    logging.info(f"학습 자료 선택: {filename}")
     state["waiting_for_answer"] = False
 
-    prompt = f"""아래 학습 자료를 읽고 복습 퀴즈 문제 1개를 출제해주세요.
+    # 커스텀 문제 vs 파일 기반 문제 선택
+    custom_qs = db.get_active_custom_questions()
+    use_custom = bool(custom_qs) and random.random() < 0.3
+
+    if use_custom:
+        cq = random.choice(custom_qs)
+        question     = cq["question"]
+        source_file  = f"custom:{cq['id']}"
+        source_content = ""
+        logging.info(f"커스텀 문제 선택: #{cq['id']}")
+    else:
+        filename, content = get_random_study_file()
+        if not content:
+            await channel.send("⚠️ 학습 자료를 찾을 수 없습니다.")
+            return
+
+        logging.info(f"학습 자료 선택: {filename}")
+
+        prompt = f"""아래 학습 자료를 읽고 복습 퀴즈 문제 1개를 출제해주세요.
 
 === 학습 자료: {filename} ===
 {content}
@@ -352,18 +397,24 @@ async def do_quiz(channel):
 ❓ **문제**: (문제 내용)
 💡 **힌트**: (선택사항, 불필요하면 생략)"""
 
-    logging.info("퀴즈 생성 중 (Sonnet)...")
-    question = await asyncio.to_thread(call_claude, prompt, SONNET)
-    logging.info(f"퀴즈 생성 완료: {question[:50]}...")
+        logging.info("퀴즈 생성 중 (Sonnet)...")
+        question = await asyncio.to_thread(call_claude, prompt, SONNET)
+        logging.info(f"퀴즈 생성 완료: {question[:50]}...")
 
-    state["current_question"]  = question
-    state["source_content"]    = content
-    state["source_file"]       = filename
+        source_file    = filename
+        source_content = content
+
+    quiz_id = db.add_quiz_record(source_file, question)
+
+    state["current_question"]   = question
+    state["source_content"]     = source_content
+    state["source_file"]        = source_file
     state["waiting_for_answer"] = True
+    state["current_quiz_id"]    = quiz_id
 
-    await channel.send(f"{question}\n\n_답변을 입력하면 채점해드립니다._")
-    db.add_quiz_record(filename, question)
-    logging.info("퀴즈 전송 완료")
+    await channel.send(f"{question}\n\n_답변을 입력하면 채점해드립니다._ | 🆔 `#{quiz_id}`")
+    state["reminder_task"] = asyncio.create_task(reminder_loop(channel, quiz_id))
+    logging.info(f"퀴즈 전송 완료 (#{quiz_id})")
 
 
 @tasks.loop(time=ALL_TIMES)
@@ -394,16 +445,66 @@ async def on_message(message):
     if message.channel.id != CHANNEL_ID:
         return
 
-    if message.content.strip() == "/status":
+    content = message.content.strip()
+
+    if content == "/status":
         await message.channel.send(build_status_message())
         return
 
-    if message.content.strip() == "/quiz":
+    if content == "/quiz":
         await do_quiz(message.channel)
         return
 
-    if message.content.startswith("??"):
-        question_text = message.content[2:].strip()
+    if content == "/answer":
+        if not state["waiting_for_answer"] or not state["current_quiz_id"]:
+            await message.channel.send("현재 진행 중인 문제가 없습니다.")
+            return
+        thinking_msg = await message.channel.send("정답 생성 중... ⏳")
+        answer_prompt = f"""다음 문제의 정답과 해설을 알려주세요.
+
+문제:
+{state["current_question"]}
+
+{f"참고 자료:{chr(10)}{state['source_content']}" if state["source_content"] else ""}
+
+아래 형식으로 출력해주세요:
+
+**정답**: (핵심 답변)
+**해설**: (간결한 설명)"""
+        answer = await asyncio.to_thread(call_claude, answer_prompt, SONNET)
+        await thinking_msg.delete()
+        await send_long_message(message.channel, f"📖 **`#{state['current_quiz_id']}` 정답 공개**\n\n{answer}")
+        db.update_result_by_id(state["current_quiz_id"], "정답확인")
+        _cancel_reminder()
+        state["waiting_for_answer"] = False
+        return
+
+    if content.startswith("/add "):
+        question_text = content[5:].strip()
+        if not question_text:
+            await message.channel.send("문제 내용을 입력해주세요. 예: `/add 질문 내용`")
+            return
+        custom_id = db.add_custom_question(question_text)
+        await message.channel.send(f"✅ 문제가 추가되었습니다. (커스텀 문제 ID: `#{custom_id}`에서 출제 예정)")
+        logging.info(f"커스텀 문제 추가: custom_id={custom_id}")
+        return
+
+    if content.startswith("/delete "):
+        id_str = content[8:].strip().lstrip("#")
+        if not id_str.isdigit():
+            await message.channel.send("올바른 문제 ID를 입력해주세요. 예: `/delete 42`")
+            return
+        quiz_id = int(id_str)
+        success = db.delete_quiz(quiz_id)
+        if success:
+            await message.channel.send(f"🗑️ `#{quiz_id}` 문제가 삭제되었습니다. 더 이상 출제되지 않습니다.")
+            logging.info(f"문제 삭제: quiz_id={quiz_id}")
+        else:
+            await message.channel.send(f"❌ `#{quiz_id}` 문제를 찾을 수 없습니다.")
+        return
+
+    if content.startswith("??"):
+        question_text = content[2:].strip()
         if not question_text:
             return
         thinking_msg = await message.channel.send("답변 생성 중... ⏳")
@@ -428,8 +529,8 @@ _자세한 내용은 학습 자료에 저장됩니다._
             await message.channel.send(f"📝 학습 자료 저장됨: `{filename}`")
         return
 
-    if message.content.startswith("?"):
-        question_text = message.content[1:].strip()
+    if content.startswith("?"):
+        question_text = content[1:].strip()
         if not question_text:
             return
         thinking_msg = await message.channel.send("답변 생성 중... ⏳")
@@ -451,13 +552,15 @@ _자세한 내용은 학습 자료에 저장됩니다._
         return
 
     state["waiting_for_answer"] = False
+    _cancel_reminder()
+
     user_answer  = message.content
     thinking_msg = await message.channel.send("채점 중... ⏳")
 
     grade_prompt = f"""아래 퀴즈 문제와 사용자 답변을 채점해주세요.
 
 === 학습 자료 참고 ===
-{state["source_content"]}
+{state["source_content"] or "커스텀 문제 (참고 자료 없음)"}
 === 끝 ===
 
 문제:
@@ -475,7 +578,7 @@ _자세한 내용은 학습 자료에 저장됩니다._
 
     await thinking_msg.delete()
     await send_long_message(message.channel, result)
-    db.update_last_result(state["source_file"], extract_result(result))
+    db.update_result_by_id(state["current_quiz_id"], extract_result(result))
 
 
 client.run(DISCORD_TOKEN)

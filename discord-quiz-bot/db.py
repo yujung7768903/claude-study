@@ -26,9 +26,23 @@ def init_db():
                 date        TEXT NOT NULL,
                 source_file TEXT NOT NULL,
                 question    TEXT NOT NULL,
-                result      TEXT DEFAULT '미답변'
+                result      TEXT DEFAULT '미답변',
+                deleted     INTEGER DEFAULT 0
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS custom_questions (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                question   TEXT NOT NULL,
+                deleted    INTEGER DEFAULT 0,
+                created_at TEXT NOT NULL
+            )
+        """)
+        # 기존 quiz_history에 deleted 컬럼 없으면 추가
+        try:
+            conn.execute("ALTER TABLE quiz_history ADD COLUMN deleted INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
         conn.commit()
 
 
@@ -55,14 +69,15 @@ def load_history() -> list:
         return [dict(r) for r in rows]
 
 
-def add_quiz_record(source_file: str, question: str):
+def add_quiz_record(source_file: str, question: str) -> int:
     now = datetime.now(KST)
     with _get_conn() as conn:
-        conn.execute(
+        cursor = conn.execute(
             "INSERT INTO quiz_history (datetime, date, source_file, question, result) VALUES (?, ?, ?, ?, ?)",
             (now.isoformat(), now.strftime("%Y-%m-%d"), source_file, question, "미답변"),
         )
         conn.commit()
+        return cursor.lastrowid
 
 
 def update_last_result(source_file: str, result: str):
@@ -79,3 +94,48 @@ def update_last_result(source_file: str, result: str):
             (result, source_file),
         )
         conn.commit()
+
+
+def update_result_by_id(quiz_id: int, result: str):
+    with _get_conn() as conn:
+        conn.execute(
+            "UPDATE quiz_history SET result = ? WHERE id = ?",
+            (result, quiz_id),
+        )
+        conn.commit()
+
+
+def add_custom_question(question: str) -> int:
+    now = datetime.now(KST)
+    with _get_conn() as conn:
+        cursor = conn.execute(
+            "INSERT INTO custom_questions (question, deleted, created_at) VALUES (?, 0, ?)",
+            (question, now.isoformat()),
+        )
+        conn.commit()
+        return cursor.lastrowid
+
+
+def get_active_custom_questions() -> list:
+    with _get_conn() as conn:
+        rows = conn.execute(
+            "SELECT * FROM custom_questions WHERE deleted = 0"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+
+def delete_quiz(quiz_id: int) -> bool:
+    """quiz_history 레코드를 deleted=1로 마킹. custom question이면 함께 삭제. 존재 여부 반환."""
+    with _get_conn() as conn:
+        row = conn.execute(
+            "SELECT source_file FROM quiz_history WHERE id = ?", (quiz_id,)
+        ).fetchone()
+        if not row:
+            return False
+        conn.execute("UPDATE quiz_history SET deleted = 1 WHERE id = ?", (quiz_id,))
+        source_file = row["source_file"]
+        if source_file.startswith("custom:"):
+            custom_id = int(source_file.split(":")[1])
+            conn.execute("UPDATE custom_questions SET deleted = 1 WHERE id = ?", (custom_id,))
+        conn.commit()
+        return True
