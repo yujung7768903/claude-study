@@ -72,18 +72,23 @@ ALL_TIMES = sorted(
 # ── 학습 파일 선택 ──────────────────────────────────────────────────
 
 def get_random_study_file() -> tuple[str, str]:
-    md_map = {f.name: f for f in STUDY_DIR.glob("*.md")}
+    md_map = {f.name: f for f in STUDY_DIR.rglob("*.md")}
     if not md_map:
         return "", ""
 
-    retry_files, fresh_files = get_file_candidates(set(md_map.keys()))
+    current_files = set(md_map.keys())
+    retry_files, fresh_files = get_file_candidates(current_files)
+
+    # DB에 기록된 구 파일명이 현재 파일 목록에 없을 수 있으므로 필터링
+    retry_files &= current_files
+    fresh_files &= current_files
 
     if retry_files:
         candidates, tag = retry_files, "재출제(오답/부분정답)"
     elif fresh_files:
         candidates, tag = fresh_files, "신규"
     else:
-        candidates, tag = set(md_map.keys()), "전체(소진)"
+        candidates, tag = current_files, "전체(소진)"
         logging.warning("출제 가능한 파일 없음, 전체에서 선택")
 
     chosen_name = random.choice(list(candidates))
