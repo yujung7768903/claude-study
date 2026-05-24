@@ -2,7 +2,7 @@ name: Claude Issue Handler
 
 on:
   issues:
-    types: [opened, labeled]
+    types: [labeled]
 
 jobs:
   handle-issue:
@@ -24,8 +24,19 @@ jobs:
           fetch-depth: 0
           token: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Check if branch already exists
+        id: check
+        run: |
+          BRANCH="claude/issue-${{ github.event.issue.number }}"
+          if git ls-remote --exit-code --heads origin "$BRANCH"; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+
       - name: Create branch
         id: branch
+        if: steps.check.outputs.exists == 'false'
         run: |
           BRANCH="claude/issue-${{ github.event.issue.number }}"
           git config user.name "github-actions[bot]"
@@ -35,6 +46,7 @@ jobs:
           echo "name=$BRANCH" >> $GITHUB_OUTPUT
 
       - name: Run Claude Code Action
+        if: steps.check.outputs.exists == 'false'
         uses: anthropics/claude-code-action@beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
