@@ -28,10 +28,3 @@ jobs:
             docker compose down
             docker compose up -d --build
 
-      - name: Notify success
-        if: success()
-        run: echo "discord-quiz-bot 배포 완료 (PR #${{ github.event.pull_request.number }})"
-
-      - name: Notify failure
-        if: failure()
-        run: echo "배포 실패 - 로그를 확인하세요"
