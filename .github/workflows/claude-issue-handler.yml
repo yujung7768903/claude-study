@@ -8,10 +8,8 @@ jobs:
   handle-issue:
     runs-on: ubuntu-latest
 
-    # quiz-bot AND claude 라벨이 둘 다 있을 때만 실행
-    if: |
-      contains(github.event.issue.labels.*.name, 'claude') &&
-      contains(github.event.issue.labels.*.name, 'quiz-bot')
+    # claude 라벨이 있을 때만 실행
+    if: contains(github.event.issue.labels.*.name, 'claude')
 
     permissions:
       contents: write
