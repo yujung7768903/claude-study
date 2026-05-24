@@ -1,0 +1,37 @@
+name: Deploy discord-quiz-bot to GCE
+
+on:
+  pull_request:
+    types: [closed]
+    branches: [main]
+
+jobs:
+  deploy:
+    # claude/issue-* 브랜치에서 온 PR이 머지됐을 때만 실행
+    if: |
+      github.event.pull_request.merged == true &&
+      startsWith(github.event.pull_request.head.ref, 'claude/issue-')
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy to GCE via SSH
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.GCE_HOST }}
+          username: ${{ secrets.GCE_USERNAME }}
+          key: ${{ secrets.GCE_SSH_PRIVATE_KEY }}
+          script: |
+            cd ${{ secrets.GCE_PROJECT_PATH }}
+            git pull origin main
+            cd discord-quiz-bot
+            docker compose down
+            docker compose up -d --build
+
+      - name: Notify success
+        if: success()
+        run: echo "discord-quiz-bot 배포 완료 (PR #${{ github.event.pull_request.number }})"
+
+      - name: Notify failure
+        if: failure()
+        run: echo "배포 실패 - 로그를 확인하세요"
