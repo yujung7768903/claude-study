@@ -65,6 +65,16 @@ jobs:
 
             지시사항:
             - 이슈 내용을 분석하고 필요한 코드 변경을 수행하세요.
-            - 변경 후 현재 브랜치에 커밋하세요.
-            - main 브랜치를 대상으로 Draft PR을 생성하고, PR 본문에 "Closes #${{ github.event.issue.number }}"를 포함하세요.
-            - PR은 Draft 상태로 생성하세요 (사용자가 직접 머지할 예정).
+            - 변경 후 현재 브랜치에 커밋하고 push하세요.
+
+      - name: Create Draft PR
+        if: steps.check.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --title "${{ github.event.issue.title }}" \
+            --body "Closes #${{ github.event.issue.number }}" \
+            --base main \
+            --head "claude/issue-${{ github.event.issue.number }}" \
+            --draft
