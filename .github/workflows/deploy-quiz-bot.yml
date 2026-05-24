@@ -18,11 +18,11 @@ jobs:
       - name: Deploy to GCE via SSH
         uses: appleboy/ssh-action@v1.0.3
         with:
-          host: ${{ secrets.GCE_HOST }}
-          username: ${{ secrets.GCE_USERNAME }}
-          key: ${{ secrets.GCE_SSH_PRIVATE_KEY }}
+          host: ${{ secrets.GCP_HOST }}
+          username: ${{ secrets.GCP_USERNAME }}
+          key: ${{ secrets.GCP_SSH_PRIVATE_KEY }}
           script: |
-            cd ${{ secrets.GCE_PROJECT_PATH }}
+            cd ${{ secrets.GCP_PROJECT_PATH }}
             git pull origin main
             cd discord-quiz-bot
             docker compose down
