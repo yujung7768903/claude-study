@@ -1,0 +1,56 @@
+name: Claude Issue Handler
+
+on:
+  issues:
+    types: [opened, labeled]
+
+jobs:
+  handle-issue:
+    runs-on: ubuntu-latest
+
+    # quiz-bot AND claude 라벨이 둘 다 있을 때만 실행
+    if: |
+      contains(github.event.issue.labels.*.name, 'claude') &&
+      contains(github.event.issue.labels.*.name, 'quiz-bot')
+
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Create branch
+        id: branch
+        run: |
+          BRANCH="claude/issue-${{ github.event.issue.number }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout -b "$BRANCH"
+          git push origin "$BRANCH"
+          echo "name=$BRANCH" >> $GITHUB_OUTPUT
+
+      - name: Run Claude Code Action
+        uses: anthropics/claude-code-action@beta
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          direct_prompt: |
+            GitHub Issue #${{ github.event.issue.number }}을 처리해주세요.
+
+            제목: ${{ github.event.issue.title }}
+
+            내용:
+            ${{ github.event.issue.body }}
+
+            현재 브랜치: ${{ steps.branch.outputs.name }}
+
+            지시사항:
+            - 이슈 내용을 분석하고 필요한 코드 변경을 수행하세요.
+            - 변경 후 현재 브랜치에 커밋하세요.
+            - main 브랜치를 대상으로 Draft PR을 생성하고, PR 본문에 "Closes #${{ github.event.issue.number }}"를 포함하세요.
+            - PR은 Draft 상태로 생성하세요 (사용자가 직접 머지할 예정).
