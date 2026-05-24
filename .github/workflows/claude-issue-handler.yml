@@ -11,6 +11,9 @@ jobs:
     # claude 라벨이 있을 때만 실행
     if: contains(github.event.issue.labels.*.name, 'claude')
 
+    env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
     permissions:
       contents: write
       pull-requests: write
