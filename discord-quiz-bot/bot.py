@@ -271,24 +271,34 @@ async def save_qa_to_md(question: str, answer: str) -> str:
 # ── 리마인더 ─────────────────────────────────────────────────────────
 
 async def reminder_loop(channel, quiz_id: int):
-    await asyncio.sleep(600)  # 10분
-    if state["waiting_for_answer"] and state["current_quiz_id"] == quiz_id:
-        await channel.send(f"⏰ 아직 `#{quiz_id}` 문제를 풀지 않으셨네요! 도전해보세요.")
-    else:
-        return
-
-    await asyncio.sleep(600)  # 20분
-    if state["waiting_for_answer"] and state["current_quiz_id"] == quiz_id:
-        await channel.send(f"⏰ 20분이 지났습니다! `#{quiz_id}` 아직 도전 중이신가요?")
-    else:
-        return
-
-    await asyncio.sleep(600)  # 30분
+    await asyncio.sleep(1800)  # 30분
     if state["waiting_for_answer"] and state["current_quiz_id"] == quiz_id:
         await channel.send(
             f"⏰ 30분이 지났습니다! `#{quiz_id}` 아직 답변하지 않으셨네요.\n"
             f"정답을 보시겠습니까? `/answer` 를 입력하면 정답을 확인할 수 있습니다."
         )
+    else:
+        return
+
+    await asyncio.sleep(1800)  # 1시간 (30분 + 30분)
+    if state["waiting_for_answer"] and state["current_quiz_id"] == quiz_id:
+        # 1시간 시점에서 자동으로 정답 공개
+        answer_prompt = f"""다음 문제의 정답과 해설을 알려주세요.
+
+문제:
+{state["current_question"]}
+
+{f"참고 자료:{chr(10)}{state['source_content']}" if state["source_content"] else ""}
+
+아래 형식으로 출력해주세요:
+
+**정답**: (핵심 답변)
+**해설**: (간결한 설명)"""
+        
+        answer = await asyncio.to_thread(call_claude, answer_prompt, SONNET)
+        await send_long_message(channel, f"📖 **`#{quiz_id}` 정답 자동 공개 (1시간 경과)**\n\n{answer}")
+        db.update_result_by_id(quiz_id, "미답변")
+        state["waiting_for_answer"] = False
 
 
 def _cancel_reminder():
