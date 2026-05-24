@@ -77,4 +77,5 @@ jobs:
             --body "Closes #${{ github.event.issue.number }}" \
             --base main \
             --head "claude/issue-${{ github.event.issue.number }}" \
-            --draft
+            --draft \
+            --label "claude"
