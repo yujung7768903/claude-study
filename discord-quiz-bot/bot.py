@@ -118,7 +118,7 @@ def get_file_candidates(all_files: set) -> tuple[set, set]:
     for fname, info in latest.items():
         if info["dt"] < cutoff:
             continue
-        if info["result"] in ("오답", "부분정답", "미답변"):
+        if info["result"] in ("오답", "부분정답"):
             if info["dt"].date() < today:
                 retry_files.add(fname)
             else:
