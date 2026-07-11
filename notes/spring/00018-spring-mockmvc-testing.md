@@ -125,6 +125,38 @@ public class UserControllerTest {
 }
 ```
 
+#### Security 필터 적용
+
+```java
+@RunWith(SpringRunner.class)
+@SpringBootTest
+public class UserControllerTest {
+
+    @Autowired
+    private WebApplicationContext context;
+
+    @Autowired
+    private Filter springSecurityFilterChain;
+
+    private MockMvc mockMvc;
+
+    @Before
+    public void setUp() {
+        mockMvc = MockMvcBuilders
+            .webAppContextSetup(context)
+            .addFilter(springSecurityFilterChain)  // Security 필터 적용
+            .build();
+    }
+
+    @Test
+    @WithMockUser(username = "alice", roles = "USER")
+    void getUser() throws Exception { ... }
+
+    @Test
+    void getUser_unauthorized() throws Exception { ... }
+}
+```
+
 **특징**:
 - 전체 Spring Context 사용
 - Filter, Interceptor 커스터마이징 가능
@@ -167,6 +199,37 @@ public class UserControllerTest {
 - 특정 Controller만 테스트
 - Service는 Mock으로 주입
 - 단위 테스트에 적합
+
+### 방법 4: @WebMvcTest (슬라이스 테스트)
+
+```java
+@WebMvcTest(UserController.class)
+class UserControllerTest {
+
+    @Autowired
+    MockMvc mockMvc;
+
+    @MockBean
+    UserService userService;
+
+    @Test
+    void getUser() throws Exception {
+        given(userService.findById(1L)).willReturn(new User(1L, "Alice"));
+
+        mockMvc.perform(get("/users/1"))
+            .andExpect(status().isOk())
+            .andExpect(jsonPath("$.name").value("Alice"));
+    }
+}
+```
+
+**특징**:
+- **Web 레이어만** 로드 (Controller, Filter, ControllerAdvice 등)
+- Service, Repository는 `@MockBean`으로 주입
+- Spring Context 전체 로드 없이 빠르게 Controller만 테스트
+- `@SpringBootTest`보다 가볍고 `standaloneSetup`보다 Spring 인프라를 활용할 수 있음
+
+---
 
 ## MockMvc 사용 방법
 
@@ -590,9 +653,10 @@ public void 라이브러리_목록조회_페이징_테스트() throws Exception 
 
 | 방법 | Runner | Spring Context | 속도 | 용도 |
 |------|--------|---------------|------|------|
+| **@WebMvcTest** | SpringRunner | ✅ Web 레이어만 | 빠름 | Controller 슬라이스 테스트 |
 | **@AutoConfigureMockMvc** | SpringRunner | ✅ 전체 | 느림 | 통합 테스트 |
-| **webAppContextSetup** | SpringRunner | ✅ 전체 | 느림 | 커스터마이징 필요 시 |
-| **standaloneSetup** | MockitoJUnitRunner | ❌ 없음 | 빠름 | Controller 단위 테스트 |
+| **webAppContextSetup** | SpringRunner | ✅ 전체 | 느림 | 커스터마이징/Security 필터 필요 시 |
+| **standaloneSetup** | MockitoJUnitRunner | ❌ 없음 | 가장 빠름 | 순수 단위 테스트 |
 
 ## 주의사항
 
@@ -730,9 +794,10 @@ mockMvc.perform(get("/api/users"))
 
 ### 생성 방법
 
-1. **@AutoConfigureMockMvc**: 전체 통합 테스트 (권장)
-2. **webAppContextSetup**: 커스터마이징 필요 시
-3. **standaloneSetup**: Controller 단위 테스트
+1. **@WebMvcTest**: Controller 슬라이스 테스트 (Web 레이어만, 빠름)
+2. **@AutoConfigureMockMvc**: 전체 통합 테스트
+3. **webAppContextSetup**: 커스터마이징/Security 필터 필요 시
+4. **standaloneSetup**: Spring 없이 순수 단위 테스트 (가장 빠름)
 
 ### 핵심 사용 패턴
 

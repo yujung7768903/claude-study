@@ -1,4 +1,4 @@
-# 웹 서버(Web Server) vs 웹 애플리케이션 서버(WAS)
+# 웹 서버(Web Server) vs WAS vs API 서버
 
 ## 개념 설명
 
@@ -18,7 +18,7 @@
 
 ---
 
-## 비교표
+## 웹 서버 vs WAS 비교표
 
 | 구분 | 웹 서버 | WAS |
 |------|---------|-----|
@@ -110,9 +110,88 @@ Spring Boot는 Tomcat을 내장하고 있어 별도 WAS 설치 없이 실행 가
 
 ---
 
+## API 서버는 WAS인가?
+
+**맞다. API 서버는 WAS의 일종이다.**
+
+다만 두 용어는 바라보는 관점이 다르다.
+
+| 용어 | 관점 | 초점 |
+|------|------|------|
+| WAS | 기술/구조 | "동적 요청을 처리하는 서버 런타임" |
+| API 서버 | 역할/목적 | "데이터를 JSON으로 반환하는 서버" |
+
+API 서버는 WAS라는 그릇 위에서 동작하는 애플리케이션이다.
+
+### 공통점 (왜 WAS라 부를 수 있는가)
+
+- HTTP 요청을 받아 **동적으로** 응답을 생성한다
+- **비즈니스 로직**을 실행한다
+- **DB와 연동**한다
+- 요청마다 다른 결과를 반환한다
+
+### 차이점: SSR 시대 vs CSR 시대
+
+**전통적 WAS (SSR 시대)**
+
+```
+클라이언트 요청 → WAS → HTML 생성(JSP/Thymeleaf) → 브라우저에 HTML 반환
+```
+
+- 서버가 HTML까지 만들어서 반환 (Server-Side Rendering)
+- Tomcat + JSP, JBoss + EJB 등
+- 화면 렌더링 책임이 서버에 있음
+
+**현대 API 서버 (CSR 시대)**
+
+```
+클라이언트 요청 → API 서버 → JSON 반환 → 클라이언트(React/Vue)가 화면 구성
+```
+
+- 서버는 데이터(JSON/XML)만 반환
+- 화면 렌더링 책임이 클라이언트에 있음
+- REST API, GraphQL 등
+
+### Spring Boot로 보는 실제 구조
+
+Spring Boot REST API 서버는 내장 Tomcat(WAS) 위에서 동작한다.
+
+```
+Spring Boot 애플리케이션
+└── 내장 Tomcat (WAS 런타임)
+    └── DispatcherServlet
+        └── @RestController (JSON 반환)
+```
+
+```java
+@RestController  // HTML 대신 JSON 반환 → "API 서버"
+@RequestMapping("/api")
+public class UserController {
+
+    @GetMapping("/users/{id}")
+    public UserResponse getUser(@PathVariable Long id) {
+        return userService.findById(id);  // JSON으로 직렬화되어 반환
+    }
+}
+```
+
+### 포함 관계 정리
+
+```
+WAS (넓은 개념)
+├── 전통적 WAS: SSR 방식으로 HTML 반환 (Tomcat + JSP)
+└── API 서버: 데이터(JSON)만 반환 (Spring Boot REST API, Node.js Express 등)
+```
+
+API 서버 ⊆ WAS
+
+---
+
 ## 실무 권장사항
 
 - **소규모/단순 서비스**: Spring Boot 내장 Tomcat만 사용해도 충분하다. Nginx를 앞에 두면 SSL과 정적 파일 처리가 편리해진다.
 - **대규모 서비스**: Nginx(웹 서버) + 여러 WAS 인스턴스 구성으로 수평 확장한다.
 - **클라우드 환경**: ALB(AWS Application Load Balancer)가 Nginx 역할을 대체할 수 있으므로, 웹 서버 없이 WAS만 두는 경우도 많다.
 - **정적 자산**: CDN(CloudFront 등)을 활용하면 웹 서버의 정적 파일 서빙 역할도 대체 가능하다.
+- 실무에서 "WAS"와 "API 서버"를 구분해서 쓸 필요는 없다. 맥락으로 충분히 통한다. 아키텍처 문서에서는 역할 기준으로 "API 서버", 기술 기준으로 "Tomcat" 등 구체적인 제품명을 쓰는 것이 명확하다.
+- Node.js Express, Python FastAPI 등도 동적 요청을 처리하므로 넓은 의미의 WAS/API 서버에 해당한다. (Java 전용 개념이 아님)
