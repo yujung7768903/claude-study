@@ -3,7 +3,7 @@
 ## 핵심 질문
 
 1. Mock은 가짜 객체인데, 어디까지 수행되는가?
-2. AmsArticleTagService에서 restTemplate.exchange()를 호출할 때, 실제 URL, requestEntity, parameter를 넣는 것까지 수행하는가?
+2. restTemplate.exchange()를 호출할 때, 실제 URL, requestEntity, parameter를 넣는 것까지 수행하는가?
 3. Mock 객체에 인자를 전달해서 검증까지만 하는 건가?
 4. verify는 인자가 전달되는 순간에 캡처하는 건가?
 
@@ -43,6 +43,36 @@ when(restTemplate.exchange(anyString(), any(), any(), any(), anyMap()))
 - "실제 HTTP 요청을 보내지 말고"
 - "그냥 mockResponse를 반환해!"
 
+### Stubbing vs 실제 호출
+
+#### 1. Stubbing 단계 (설정)
+```java
+when(mock.method(...))  // ← "이 메서드가 호출되면"
+    .thenReturn(value);  // ← "이 값을 반환하라"
+```
+- Mock 객체에게 "시나리오"를 알려주는 것
+- 아직 실제 호출은 안 됨
+- MockHandler의 stubbings 리스트에 저장됨
+
+#### 2. 실제 호출 단계
+```java
+service.getArticleTagListFromAms(article);
+// 내부에서 restTemplate.exchange() 호출
+```
+- Mock이 저장된 stubbing을 찾아봄
+- 매칭되면 thenReturn에서 지정한 값 반환
+- HTTP 요청은 실행 안 함
+
+### 왜 "Stub"이라고 부를까?
+
+영화 촬영에서:
+- **진짜 총**: 실제로 발사됨 (위험!)
+- **소품 총 (Stub)**: 발사 안 되고 그냥 들고만 있음
+
+테스트에서:
+- **진짜 RestTemplate**: HTTP 요청 보냄 (느리고 외부 의존)
+- **Stub된 RestTemplate**: HTTP 요청 안 보내고 미리 정한 값만 반환 (빠르고 독립적)
+
 ### 내부 저장 구조
 
 ```
@@ -61,7 +91,22 @@ MockHandler {
 
 ## Mockito의 내부 구조
 
-### Mock 생성: 바이트코드 조작 (ByteBuddy)
+### 디버깅에서 보이는 것
+
+```
+디버거로 restTemplate 객체를 확인하면:
+
+restTemplate: RestTemplate$MockitoMock$1234567890@abc123
+  ├─ mockHandler: MockHandlerImpl@def456
+  ├─ mockitoInterceptor: MockitoInterceptor@ghi789
+  └─ invocationContainer: InvocationContainerImpl@jkl012
+      └─ invocations: ArrayList
+          └─ [0]: Invocation{method=exchange, args=[...]}
+```
+
+### Mock 생성 과정
+
+#### 1단계: 바이트코드 조작 (Bytecode Manipulation)
 
 ```java
 @Mock
@@ -72,7 +117,8 @@ private RestTemplate restTemplate;
 
 ```
 [1] 원본 클래스 분석
-    RestTemplate.class 로딩 → 모든 메서드 목록 추출
+    RestTemplate.class 로딩
+    → 모든 메서드 목록 추출
 
 [2] 동적으로 서브클래스 생성 (ByteBuddy 사용)
 
@@ -80,23 +126,31 @@ private RestTemplate restTemplate;
     ┌────────────────────────┐
     │ RestTemplate           │
     │ + exchange(...)        │
+    │ + getForEntity(...)    │
     └────────────────────────┘
             ↓ 상속
     ┌──────────────────────────────────────────┐
     │ RestTemplate$MockitoMock$1234567890      │  ← 런타임에 동적 생성!
     │                                          │
+    │ // 추가된 필드                           │
+    │ private MockHandler mockHandler;         │
+    │                                          │
+    │ // 오버라이드된 메서드들                 │
     │ @Override                                │
     │ public ResponseEntity exchange(...) {    │
-    │     return mockHandler.handle(           │
-    │         this, "exchange", args           │
+    │     return mockHandler.handle(          │
+    │         this, "exchange",                │
+    │         new Object[]{arg0, arg1, ...}    │
     │     );                                   │
     │ }                                        │
     └──────────────────────────────────────────┘
 
 [3] MockHandler 생성 및 연결
+    MockHandler mockHandler = new MockHandlerImpl();
+    mockInstance.mockHandler = mockHandler;
 ```
 
-### MockHandler의 구조
+#### 2단계: MockHandler의 구조
 
 ```java
 class MockHandlerImpl implements MockHandler {
@@ -104,20 +158,160 @@ class MockHandlerImpl implements MockHandler {
     private InvocationContainer invocationContainer = new InvocationContainerImpl();
 
     public Object handle(Object mock, Method method, Object[] args) {
-        // 1. 호출 기록 저장
+        // 1. 현재 호출을 Invocation 객체로 만듦
         Invocation invocation = new Invocation(mock, method, args, SequenceNumber.next());
+
+        // 2. 호출 기록 저장 (verify를 위해!)
         invocationContainer.recordInvocation(invocation);
 
-        // 2. Stubbing 확인
+        // 3. Stubbing 확인 (when-thenReturn이 있는지)
         StubbedInvocationMatcher stubbing = findMatchingStub(invocation);
 
         if (stubbing != null) {
-            return stubbing.answer(invocation);  // thenReturn 값 반환
+            // 4. thenReturn 값 반환
+            return stubbing.answer(invocation);
         } else {
-            return Defaults.defaultValue(method.getReturnType());  // null, 0, false 등
+            // 5. Stubbing 없으면 기본값 반환 (null, 0, false 등)
+            return Defaults.defaultValue(method.getReturnType());
         }
     }
 }
+```
+
+#### 3단계: InvocationContainer의 구조
+
+```java
+class InvocationContainerImpl {
+    private List<Invocation> invocations = new ArrayList<>();
+
+    public void recordInvocation(Invocation invocation) {
+        invocations.add(invocation);
+    }
+}
+
+class Invocation {
+    private Object mock;
+    private Method method;
+    private Object[] arguments;  // 전달된 인자들 ← 여기에 저장됨!
+    private int sequenceNumber;
+    private Location location;
+
+    public Object getArgument(int index) {
+        return arguments[index];
+    }
+}
+```
+
+### when-thenReturn의 동작 원리
+
+```java
+when(restTemplate.exchange(anyString(), any(), any(), any(), anyMap()))
+    .thenReturn(mockResponse);
+```
+
+**Mockito가 하는 일:**
+
+```
+[1] when() 호출
+    → Mockito를 "stubbing 모드"로 전환
+
+[2] restTemplate.exchange(...) 호출
+    → "stubbing 모드"이므로:
+      - 호출 기록은 저장 안 함
+      - 대신 InvocationMatcher 생성
+        InvocationMatcher {
+          method: exchange
+          matchers: [anyString(), any(), any(), any(), anyMap()]
+        }
+
+[3] thenReturn(mockResponse) 호출
+    → StubbedInvocationMatcher 생성 후 MockHandler.stubbings에 추가
+    → "stubbing 모드" 종료
+```
+
+### verify + ArgumentCaptor의 동작 원리
+
+```java
+ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.class);
+
+verify(restTemplate).exchange(
+    contains("/tag"),
+    eq(HttpMethod.GET),
+    entityCaptor.capture(),
+    any(),
+    anyMap()
+);
+```
+
+**흐름:**
+
+```
+[1] verify(restTemplate) → "verification 모드" ON
+
+[2] exchange(..., entityCaptor.capture(), ...) 호출
+    → InvocationMatcher 생성:
+      matchers: [contains("/tag"), eq(GET), capturesTo(entityCaptor), any(), anyMap()]
+
+[3] MockHandler에서 invocations 검색
+    → 매칭된 invocation 찾음
+    → ArgumentCaptor 처리:
+      entityCaptor.capture(inv.getArgument(2))
+      → arg[2]를 entityCaptor에 저장
+
+[4] entityCaptor.getValue()
+    → 저장된 값 반환: HttpEntity@123abc
+```
+
+### 디버깅 시 실제로 보이는 구조
+
+```
+restTemplate: RestTemplate$MockitoMock$1234567890@abc123
+  │
+  ├─ mockHandler: MockHandlerImpl@def456
+  │   │
+  │   ├─ stubbings: ArrayList
+  │   │   └─ [0]: StubbedInvocationMatcher
+  │   │       ├─ matchers: [anyString(), any(), any(), any(), anyMap()]
+  │   │       └─ answer: Returns(mockResponse)
+  │   │
+  │   └─ invocationContainer: InvocationContainerImpl
+  │       └─ invocations: ArrayList
+  │           └─ [0]: Invocation
+  │               ├─ method: exchange
+  │               └─ arguments: Object[5]
+  │                   ├─ [0]: "http://ams-api/tag?articleId={...}"
+  │                   ├─ [1]: GET
+  │                   ├─ [2]: HttpEntity@123abc  ← ArgumentCaptor가 캡처할 객체!
+  │                   ├─ [3]: ParameterizedTypeReference@456def
+  │                   └─ [4]: HashMap@789ghi
+  │
+  └─ mockitoInterceptor: MockitoInterceptor@ghi789
+```
+
+### 핵심 정리: Mockito의 동작 원리
+
+```
+# Mock 객체 생성
+원본 클래스 (RestTemplate)
+    ↓ ByteBuddy로 바이트코드 조작
+동적 생성된 서브클래스 (RestTemplate$MockitoMock$...)
+    ↓ 모든 메서드 오버라이드
+MockHandler.handle()로 라우팅
+
+# when-thenReturn
+when()               → stubbing 모드 ON
+mock.method(...)     → InvocationMatcher 생성
+thenReturn(value)    → StubbedInvocationMatcher 저장 → stubbing 모드 OFF
+
+# 실제 호출
+mock.method(args)    → Invocation 생성 (인자 저장!)
+                     → invocations에 추가
+                     → stubbing 찾기 → thenReturn 값 반환
+
+# verify + capture
+verify(mock)              → verification 모드 ON
+mock.method(captor.capture()) → invocations 검색 → Invocation.arguments[i]를 Captor에 복사
+captor.getValue()         → 저장된 인자 반환
 ```
 
 ---
@@ -131,7 +325,6 @@ when(restTemplate.exchange(anyString(), any(), any(), any(), anyMap()))
     .thenReturn(mockResponse);
 ```
 
-**Mockito가 하는 일:**
 ```
 [1] when() → "stubbing 모드" ON
 [2] restTemplate.exchange(...) → InvocationMatcher 생성
@@ -148,10 +341,10 @@ service.getArticleTagListFromAms(article);
 ```java
 // 이 코드들은 모두 실행됨 ✅
 HttpHeaders requestHeader = new HttpHeaders();
-requestHeader.add("X-Batch-User-Id", "BATCH_SYSTEM");  // ✅
+requestHeader.add("X-Batch-User-Id", "BATCH_SYSTEM");   // ✅
 HttpEntity<Object> requestEntity = new HttpEntity<>(null, requestHeader);  // ✅
 Map<String, String> params = new HashMap<>();
-params.put("articleId", rArticle.getArticleId());  // ✅
+params.put("articleId", rArticle.getArticleId());       // ✅
 
 // Mock 메서드 호출 ✅
 ResponseEntity<...> response = this.restTemplate.exchange(
@@ -191,13 +384,12 @@ ArgumentCaptor<HttpEntity> entityCaptor = ArgumentCaptor.forClass(HttpEntity.cla
 verify(restTemplate).exchange(
     contains("/tag"),
     eq(HttpMethod.GET),
-    entityCaptor.capture(),  // ← 이 순간 뭐가 일어나나?
+    entityCaptor.capture(),
     any(),
     anyMap()
 );
 ```
 
-**verify가 하는 일:**
 ```
 [1] verify(restTemplate) → "verification 모드" ON
 [2] exchange(..., entityCaptor.capture(), ...) → InvocationMatcher 생성
@@ -345,8 +537,6 @@ assertEquals("A2026020513000005239", paramsCaptor.getValue().get("articleId"));
 ## 타임라인 요약
 
 ```
-시간 →
-
 [T1] Mock 설정
      when(restTemplate.exchange(...)).thenReturn(mockResponse)
      → StubbedInvocationMatcher 저장
@@ -373,7 +563,8 @@ assertEquals("A2026020513000005239", paramsCaptor.getValue().get("articleId"));
 
 ## 핵심 정리
 
-### Q: Mock은 어디까지 수행되는가?
+### Q1: Mock은 어디까지 수행되는가?
+
 **A:**
 - ✅ 메서드 호출은 받음
 - ✅ 인자들도 받음 (실제 객체!)
@@ -381,10 +572,44 @@ assertEquals("A2026020513000005239", paramsCaptor.getValue().get("articleId"));
 - ❌ 메서드 내부 로직은 실행 안 함 (HTTP 요청 없음)
 - ✅ when-thenReturn의 값만 반환
 
-### Q: verify는 인자가 전달되는 순간에 캡처하는 건가?
-**A: 아닙니다.** Mock은 호출 시점에 인자를 저장하고, verify는 나중에 저장된 기록을 확인해서 Captor에 복사합니다. CCTV 영상을 나중에 재생하는 것과 같습니다.
+### Q2: 실제 URL, requestEntity, parameter를 넣는 것까지 수행하는가?
+
+**A: 네! 모두 수행됩니다!**
+
+```java
+// 이 코드들은 모두 실행됨 ✅
+HttpEntity requestEntity = new HttpEntity(null, headers);  // 실제 객체 생성
+Map<String, String> params = new HashMap<>();              // 실제 객체 생성
+params.put("articleId", "A123");                          // 실제 Map에 값 추가
+String url = amsServiceUrl + "/tag";                      // 실제 문자열 생성
+
+// Mock 호출도 일어남 ✅
+restTemplate.exchange(url, GET, requestEntity, ref, params);
+// ↑ 이 줄이 실행되고, 인자들도 모두 전달됨!
+// 단지 exchange() 내부의 HTTP 요청 로직만 실행 안 됨!
+```
+
+### Q3: Mock 객체에 인자를 전달해서 검증까지만 하는 건가?
+
+**A: 조금 다릅니다.**
+
+1. 서비스 실행 시: Mock에 인자 전달 + 호출 기록 저장
+2. verify 실행 시: 저장된 기록을 확인 + Captor에 복사
+3. getValue() 실행 시: Captor에서 꺼내서 검증
+
+### Q4: verify는 인자가 전달되는 순간에 캡처하는 건가?
+
+**A: 아닙니다.** Mock은 호출 시점에 인자를 저장하고, verify는 나중에 저장된 기록을 확인해서 Captor에 복사합니다.
+
+**비유: CCTV**
+- `[서비스 실행]` = 범인이 범죄 현장에서 행동 → CCTV가 녹화
+- `[verify 실행]` = 나중에 CCTV 영상 재생 → 특정 프레임 캡처
+- `[getValue()]` = 캡처한 이미지 분석
+
+`capture()`는 "인자가 전달되는 순간"이 아니라 "verify 실행 시점"에 이미 저장된 기록에서 꺼내오는 것.
 
 ### ArgumentCaptor 동작 순서
+
 ```
 Captor 생성 → 서비스 실행 → Mock 호출 → verify + capture → getValue → 검증
 ```
